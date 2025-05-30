@@ -1,20 +1,52 @@
-use rand_chacha::rand_core::SeedableRng;
+use std::str::FromStr;
+use std::path::PathBuf;
+
+use recipe::Recipe;
 
 pub mod tokens;
 pub mod tokenizer;
 pub mod recipe;
 pub mod clustering;
 
-fn main() {
-    let mut rand = rand_chacha::ChaCha20Rng::seed_from_u64(42);
+fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1);
 
-    let documents = [
-        vec!["hello", "world"].into_boxed_slice(),
-        vec!["hi", "how", "are", "you"].into_boxed_slice(),
-        vec!["who", "are", "you"].into_boxed_slice(),
-        vec!["hello", "amogus"].into_boxed_slice(),
-        // vec!["aboba"].into_boxed_slice()
-    ];
+    match args.next().as_deref() {
+        Some("new") => {
+            let path = args.next()
+                .unwrap_or_else(|| String::from("capacitorfile"));
 
-    dbg!(clustering::clusterize(3, 1, &documents, &mut rand).unwrap());
+            let recipe = Recipe::default();
+
+            std::fs::write(path, recipe.to_string())?;
+
+            println!("Saved example capacitor model recipe file");
+        }
+
+        Some("build") => {
+            let path = args.next()
+                .unwrap_or_else(|| String::from("capacitorfile"));
+
+            let path = PathBuf::from(path);
+
+            if !path.is_file() {
+                anyhow::bail!("invalid recipe file path");
+            }
+
+            let recipe = std::fs::read_to_string(&path)?;
+            let recipe = Recipe::from_str(&recipe)?;
+
+            dbg!(recipe);
+        }
+
+        Some("help") | None => {
+            println!("capacitor help - show this help message");
+            println!("capacitor new <recipe path> - save new example model file");
+            println!("capacitor build <recipe path> - build the model");
+        }
+
+        Some(command) => anyhow::bail!("unknown command: {command}")
+    }
+
+    Ok(())
 }

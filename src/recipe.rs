@@ -66,6 +66,21 @@ pub struct Recipe {
     pub active_experts: usize
 }
 
+impl Default for Recipe {
+    fn default() -> Self {
+        Self {
+            name: String::from("new-model"),
+            files: Vec::new(),
+            tokenizer: Tokenizer::WordTokenizer {
+                lowercase: true,
+                punctuation: false
+            },
+            total_experts: 4,
+            active_experts: 1
+        }
+    }
+}
+
 impl std::fmt::Display for Recipe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let files = self.files.iter()

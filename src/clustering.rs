@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use rand_chacha::rand_core::RngCore;
-use rand_chacha::ChaCha20Rng;
 
 #[derive(Debug, Clone)]
 pub struct Cluster<T> {
@@ -29,7 +28,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
     clusters_num: usize,
     centroids_num: usize,
     documents: impl AsRef<[Box<[T]>]>,
-    rand: &mut ChaCha20Rng
+    rand: &mut impl RngCore
 ) -> anyhow::Result<Box<[Cluster<T>]>> {
     if clusters_num < 1 {
         anyhow::bail!("clusters_num must be greater than 0");
