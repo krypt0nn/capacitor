@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 pub trait Token<const SIZE: usize>:
@@ -176,6 +176,29 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
         self.map
     }
 
+    pub fn for_each(&self, mut callback: impl FnMut(T, String)) {
+        let mut i = 0;
+        let n = self.map.len();
+
+        let mut token_buf = [0; SIZE];
+
+        while i < n {
+            token_buf.copy_from_slice(&self.map[i..i + SIZE]);
+
+            let token = T::decode(token_buf);
+            let word_len = self.map[i + SIZE] as usize;
+
+            i += SIZE + 1;
+
+            let word = String::from_utf8_lossy(&self.map[i..i + word_len])
+                .to_string();
+
+            callback(token, word);
+
+            i += word_len;
+        }
+    }
+
     pub fn from_words<F: ToString>(words: impl IntoIterator<Item = F>) -> anyhow::Result<Self> {
         let mut unique_words = HashSet::new();
         let mut token = T::zero();
@@ -254,6 +277,16 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
         None
     }
 
+    pub fn as_table(&self) -> HashMap<T, String> {
+        let mut tokens = HashMap::new();
+
+        self.for_each(|token, word| {
+            tokens.insert(token, word);
+        });
+
+        tokens
+    }
+
     /// Amount of stored tokens.
     pub fn len(&self) -> usize {
         let mut i = SIZE;
@@ -304,6 +337,12 @@ fn test_tokens_map() -> anyhow::Result<()> {
 
     assert!(map.find_token("amogus").is_none());
     assert!(map.find_word(42_u16).is_none());
+
+    let map = map.as_table();
+
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.get(&hello_token), Some(&String::from("hello")));
+    assert_eq!(map.get(&world_token), Some(&String::from("world")));
 
     Ok(())
 }
