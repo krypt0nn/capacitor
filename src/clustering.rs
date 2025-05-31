@@ -1,5 +1,5 @@
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
 
 use rand_chacha::rand_core::RngCore;
 
@@ -9,6 +9,18 @@ pub struct Cluster<T> {
 }
 
 impl<T: PartialEq + Eq + std::hash::Hash> Cluster<T> {
+    #[inline]
+    pub fn new(ranks: impl IntoIterator<Item = (T, f32)>) -> Self {
+        Self {
+            ranks: HashMap::from_iter(ranks)
+        }
+    }
+
+    #[inline]
+    pub fn into_inner(self) -> HashMap<T, f32> {
+        self.ranks
+    }
+
     /// Calculate distance from the current cluster to the given document.
     pub fn distance(&self, document: impl IntoIterator<Item = T>) -> f32 {
         let mut distance = 0.0;
@@ -20,6 +32,13 @@ impl<T: PartialEq + Eq + std::hash::Hash> Cluster<T> {
         }
 
         distance
+    }
+}
+
+impl<T> From<HashMap<T, f32>> for Cluster<T> {
+    #[inline(always)]
+    fn from(ranks: HashMap<T, f32>) -> Self {
+        Self { ranks }
     }
 }
 

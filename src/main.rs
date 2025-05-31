@@ -6,6 +6,7 @@ use recipe::Recipe;
 pub mod tokens;
 pub mod tokenizer;
 pub mod transitions;
+pub mod model;
 pub mod recipe;
 pub mod clustering;
 
@@ -36,13 +37,6 @@ fn main() -> anyhow::Result<()> {
 
             let recipe = std::fs::read_to_string(&path)?;
             let recipe = Recipe::from_str(&recipe)?;
-
-            let map = transitions::TransitionsMap::<2, u16>::from_transitions([
-                (&[1], &[1, 2], u16::MAX / 2),
-                (&[2], &[2, 3], u16::MAX / 2)
-            ])?;
-
-            dbg!(map);
 
             dbg!(recipe);
         }
