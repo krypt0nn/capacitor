@@ -267,7 +267,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         // Tokenize documents.
 
         let mut tokens = HashMap::<String, T>::new();
-        let mut words = Vec::new();
+        let mut words = HashSet::new();
         let mut token = T::zero();
 
         let start_token = (Self::START_TOKEN, token);
@@ -289,7 +289,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
                     if !tokens.contains_key(&word) {
                         tokens.insert(word.clone(), token);
-                        words.push(word.clone());
+                        words.insert(word.clone());
 
                         token = token.inc();
                     }
@@ -612,7 +612,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
         }
 
         experts.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
+            a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)
         });
 
         experts.shrink_to(self.active_experts);
