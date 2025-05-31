@@ -82,7 +82,10 @@ pub struct Recipe {
     pub total_experts: usize,
 
     /// Amount of active experts at a time.
-    pub active_experts: usize
+    pub active_experts: usize,
+
+    /// Amount of centroids in each cluster in documents clustering algorithm.
+    pub centroids: usize
 }
 
 impl Default for Recipe {
@@ -98,7 +101,8 @@ impl Default for Recipe {
             from_depth: 1,
             to_depth: 1,
             total_experts: 4,
-            active_experts: 1
+            active_experts: 1,
+            centroids: 0
         }
     }
 }
@@ -152,6 +156,7 @@ impl FromStr for Recipe {
         let mut to_depth = 1;
         let mut total_experts = 0;
         let mut active_experts = 0;
+        let mut centroids = 0;
 
         for line in s.lines() {
             if line.is_empty() {
@@ -216,6 +221,11 @@ impl FromStr for Recipe {
                     .with_context(|| format!("invalid total experts format: {line}"))?;
             }
 
+            else if let Some(value) = line.strip_prefix("Centroids ") {
+                centroids = value.parse()
+                    .with_context(|| format!("invalid centroids format: {line}"))?;
+            }
+
             else {
                 anyhow::bail!("unknown model parameter: {line}");
             }
@@ -229,7 +239,8 @@ impl FromStr for Recipe {
             from_depth,
             to_depth,
             total_experts,
-            active_experts
+            active_experts,
+            centroids
         })
     }
 }
@@ -254,7 +265,8 @@ fn test_recipe() -> anyhow::Result<()> {
         from_depth: 5,
         to_depth: 2,
         total_experts: 64,
-        active_experts: 4
+        active_experts: 4,
+        centroids: 4
     };
 
     assert_eq!(Recipe::from_str(&recipe.to_string())?, recipe);

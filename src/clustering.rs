@@ -44,20 +44,20 @@ impl<T> From<HashMap<T, f32>> for Cluster<T> {
 
 #[allow(clippy::needless_range_loop)]
 pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
-    clusters_num: usize,
-    centroids_num: usize,
+    mut clusters_num: usize,
+    mut centroids_num: usize,
     documents: impl AsRef<[Box<[T]>]>,
     rand: &mut impl RngCore
 ) -> anyhow::Result<Box<[Cluster<T>]>> {
-    if clusters_num < 1 {
-        anyhow::bail!("clusters_num must be greater than 0");
-    }
-
-    if centroids_num < 1 {
-        anyhow::bail!("centroids_num must be greater than 0");
-    }
-
     let documents = documents.as_ref();
+
+    if clusters_num == 0 {
+        clusters_num = documents.len().isqrt().max(1);
+    }
+
+    if centroids_num == 0 {
+        centroids_num = clusters_num.isqrt().max(1);
+    }
 
     if clusters_num * centroids_num > documents.len() {
         anyhow::bail!("clusters_num * centroids_num must be lower or equal to the documents amount");

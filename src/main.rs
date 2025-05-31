@@ -6,9 +6,9 @@ use recipe::Recipe;
 pub mod tokens;
 pub mod tokenizer;
 pub mod transitions;
-pub mod model;
-pub mod recipe;
 pub mod clustering;
+pub mod recipe;
+pub mod model;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);

@@ -51,29 +51,36 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         self.map
     }
 
-    pub fn from_transitions<'tokens, const I: usize, const O: usize>(
-        transitions: impl IntoIterator<Item = (&'tokens [T; I], &'tokens [T; O], u16)>
+    pub fn from_transitions<'tokens>(
+        transitions: impl IntoIterator<Item = (&'tokens [T], &'tokens [T], u16)>
     ) -> anyhow::Result<Self>
     where T: 'tokens
     {
-        if I < 1 || I > 255 {
+        let mut transitions = transitions.into_iter().collect::<Vec<_>>();
+
+        if transitions.is_empty() {
+            anyhow::bail!("at least 1 transition required");
+        }
+
+        let from_tokens = transitions[0].0.len();
+        let to_tokens = transitions[0].1.len();
+
+        if !(1..=255).contains(&from_tokens) {
             anyhow::bail!("input n-grams must be greater than 0 and lower than 256");
         }
 
-        if O < 1 || O > 255 {
+        if !(1..=255).contains(&to_tokens) {
             anyhow::bail!("output n-grams must be greater than 0 and lower than 256");
         }
-
-        let mut transitions = transitions.into_iter().collect::<Vec<_>>();
 
         transitions.sort_by(|a, b| {
             a.0.cmp(b.0)
         });
 
-        let mut map = Vec::with_capacity(2 + (SIZE * I + SIZE * O + 2) * transitions.len());
+        let mut map = Vec::with_capacity(2 + (SIZE * from_tokens + SIZE * to_tokens + 2) * transitions.len());
 
-        map.push(I as u8);
-        map.push(O as u8);
+        map.push(from_tokens as u8);
+        map.push(to_tokens as u8);
 
         for (from, to, frequency) in transitions.drain(..) {
             for token in from {
@@ -264,9 +271,9 @@ pub type TransitionsMap64 = TransitionsMap<8, u64>;
 #[test]
 fn test_transitions_map() -> anyhow::Result<()> {
     let transitions = TransitionsMap16::from_transitions([
-        (&[1, 2], &[3, 4], u16::MAX / 3),
-        (&[2, 3], &[4, 5], u16::MAX / 3),
-        (&[3, 4], &[5, 1], u16::MAX / 3)
+        ([1, 2].as_slice(), [3, 4].as_slice(), u16::MAX / 3),
+        ([2, 3].as_slice(), [4, 5].as_slice(), u16::MAX / 3),
+        ([3, 4].as_slice(), [5, 1].as_slice(), u16::MAX / 3)
     ])?;
 
     let list = transitions.read_list();
@@ -305,11 +312,11 @@ fn test_transitions_map() -> anyhow::Result<()> {
     assert_eq!(transitions.find_transitions([3, 4]), HashSet::from_iter([list[2].clone()]));
 
     let transitions = TransitionsMap16::from_transitions([
-        (&[1, 0], &[1], u16::MAX / 5),
-        (&[2, 0], &[2], u16::MAX / 5),
-        (&[3, 1], &[3], u16::MAX / 5),
-        (&[4, 1], &[4], u16::MAX / 5),
-        (&[5, 1], &[5], u16::MAX / 5)
+        ([1, 0].as_slice(), [1].as_slice(), u16::MAX / 5),
+        ([2, 0].as_slice(), [2].as_slice(), u16::MAX / 5),
+        ([3, 1].as_slice(), [3].as_slice(), u16::MAX / 5),
+        ([4, 1].as_slice(), [4].as_slice(), u16::MAX / 5),
+        ([5, 1].as_slice(), [5].as_slice(), u16::MAX / 5)
     ])?;
 
     let list = transitions.read_list();
