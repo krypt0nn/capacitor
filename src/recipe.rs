@@ -60,11 +60,28 @@ impl FromStr for Tokenizer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recipe {
+    /// Name of the model.
     pub name: String,
+
+    /// Metadata key-values table.
     pub keys: HashMap<String, String>,
+
+    /// Dataset files.
     pub files: Vec<File>,
+
+    /// Documents tokenizer.
     pub tokenizer: Tokenizer,
+
+    /// Amount of `from` tokens in transitions.
+    pub from_depth: usize,
+
+    /// Amount of `to` tokens in transitions.
+    pub to_depth: usize,
+
+    /// Total amount of experts (clusters).
     pub total_experts: usize,
+
+    /// Amount of active experts at a time.
     pub active_experts: usize
 }
 
@@ -78,6 +95,8 @@ impl Default for Recipe {
                 lowercase: true,
                 punctuation: false
             },
+            from_depth: 1,
+            to_depth: 1,
             total_experts: 4,
             active_experts: 1
         }
@@ -103,6 +122,7 @@ impl std::fmt::Display for Recipe {
         let mut lines = vec![
             format!("Name {}", self.name),
             format!("Tokenizer {}", self.tokenizer),
+            format!("Depth {}/{}", self.from_depth, self.to_depth),
             format!("Experts {}/{}", self.active_experts, self.total_experts)
         ];
 
@@ -128,6 +148,8 @@ impl FromStr for Recipe {
         let mut tokenizer = None;
         let mut keys = HashMap::new();
         let mut files = Vec::new();
+        let mut from_depth = 1;
+        let mut to_depth = 1;
         let mut total_experts = 0;
         let mut active_experts = 0;
 
@@ -170,6 +192,18 @@ impl FromStr for Recipe {
                 });
             }
 
+            else if let Some(value) = line.strip_prefix("Depth ") {
+                let Some((from, to)) = value.split_once("/") else {
+                    anyhow::bail!("invalid depth parameter value: {line}");
+                };
+
+                from_depth = from.parse()
+                    .with_context(|| format!("invalid from depth format: {line}"))?;
+
+                to_depth = to.parse()
+                    .with_context(|| format!("invalid to depth format: {line}"))?;
+            }
+
             else if let Some(value) = line.strip_prefix("Experts ") {
                 let Some((active, total)) = value.split_once("/") else {
                     anyhow::bail!("invalid experts parameter value: {line}");
@@ -192,6 +226,8 @@ impl FromStr for Recipe {
             keys,
             files,
             tokenizer: tokenizer.ok_or_else(|| anyhow::anyhow!("missing model tokenizer"))?,
+            from_depth,
+            to_depth,
             total_experts,
             active_experts
         })
@@ -215,6 +251,8 @@ fn test_recipe() -> anyhow::Result<()> {
             lowercase: true,
             punctuation: false
         },
+        from_depth: 5,
+        to_depth: 2,
         total_experts: 64,
         active_experts: 4
     };
