@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::path::PathBuf;
 
@@ -57,9 +58,10 @@ impl FromStr for Tokenizer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recipe {
     pub name: String,
+    pub keys: HashMap<String, String>,
     pub files: Vec<File>,
     pub tokenizer: Tokenizer,
     pub total_experts: usize,
@@ -70,6 +72,7 @@ impl Default for Recipe {
     fn default() -> Self {
         Self {
             name: String::from("new-model"),
+            keys: HashMap::new(),
             files: Vec::new(),
             tokenizer: Tokenizer::WordTokenizer {
                 lowercase: true,
@@ -83,6 +86,10 @@ impl Default for Recipe {
 
 impl std::fmt::Display for Recipe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys = self.keys.iter()
+            .map(|(key, value)| format!("Set {key} = {value}"))
+            .collect::<Vec<String>>();
+
         let files = self.files.iter()
             .map(|file| {
                 if file.delimiter.is_empty() {
@@ -93,15 +100,23 @@ impl std::fmt::Display for Recipe {
             })
             .collect::<Vec<String>>();
 
-        write!(
-            f,
-            "Name {}\nTokenizer {}\nExperts {}/{}\n\n{}",
-            self.name,
-            self.tokenizer,
-            self.active_experts,
-            self.total_experts,
-            files.join("\n")
-        )
+        let mut lines = vec![
+            format!("Name {}", self.name),
+            format!("Tokenizer {}", self.tokenizer),
+            format!("Experts {}/{}", self.active_experts, self.total_experts)
+        ];
+
+        if !keys.is_empty() {
+            lines.push(String::new());
+            lines.extend(keys);
+        }
+
+        if !files.is_empty() {
+            lines.push(String::new());
+            lines.extend(files);
+        }
+
+        f.write_str(&lines.join("\n"))
     }
 }
 
@@ -111,6 +126,7 @@ impl FromStr for Recipe {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut name = None;
         let mut tokenizer = None;
+        let mut keys = HashMap::new();
         let mut files = Vec::new();
         let mut total_experts = 0;
         let mut active_experts = 0;
@@ -126,6 +142,14 @@ impl FromStr for Recipe {
 
             else if let Some(value) = line.strip_prefix("Tokenizer ") {
                 tokenizer = Some(Tokenizer::from_str(value.trim())?);
+            }
+
+            else if let Some(value) = line.strip_prefix("Set ") {
+                let Some((key, value)) = value.split_once(" = ") else {
+                    anyhow::bail!("invalid set key parameter: {line}");
+                };
+
+                keys.insert(key.trim().to_string(), value.trim().to_string());
             }
 
             else if let Some(value) = line.strip_prefix("File ") {
@@ -165,6 +189,7 @@ impl FromStr for Recipe {
 
         Ok(Self {
             name: name.ok_or_else(|| anyhow::anyhow!("missing model name"))?,
+            keys,
             files,
             tokenizer: tokenizer.ok_or_else(|| anyhow::anyhow!("missing model tokenizer"))?,
             total_experts,
@@ -177,6 +202,9 @@ impl FromStr for Recipe {
 fn test_recipe() -> anyhow::Result<()> {
     let recipe = Recipe {
         name: String::from("test recipe"),
+        keys: HashMap::from_iter([
+            (String::from("test"), String::from("123"))
+        ]),
         files: vec![
             File {
                 path: PathBuf::from("test"),
