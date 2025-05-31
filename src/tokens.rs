@@ -186,9 +186,12 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
             token_buf.copy_from_slice(&self.map[i..i + SIZE]);
 
             let token = T::decode(token_buf);
-            let word_len = self.map[i + SIZE] as usize;
 
-            i += SIZE + 1;
+            let word_len = u16::from_le_bytes([
+                self.map[i + SIZE], self.map[i + SIZE + 1]
+            ]) as usize;
+
+            i += SIZE + 2;
 
             let word = String::from_utf8_lossy(&self.map[i..i + word_len])
                 .to_string();
@@ -207,13 +210,13 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
         for word in words {
             let word = word.to_string();
 
-            if word.len() > 255 {
-                anyhow::bail!("words must be shorter than 256 bytes long");
+            if word.len() > 65535 {
+                anyhow::bail!("words must be shorter than 65536 bytes long");
             }
 
             if unique_words.insert(word.clone()) {
                 map.extend_from_slice(&token.encode());
-                map.push(word.len() as u8);
+                map.extend_from_slice(&(word.len() as u16).to_le_bytes());
                 map.extend_from_slice(word.as_bytes());
 
                 token = token.inc();
@@ -237,9 +240,12 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
             token_buf.copy_from_slice(&self.map[i..i + SIZE]);
 
             let token = T::decode(token_buf);
-            let word_len = self.map[i + SIZE] as usize;
 
-            i += SIZE + 1;
+            let word_len = u16::from_le_bytes([
+                self.map[i + SIZE], self.map[i + SIZE + 1]
+            ]) as usize;
+
+            i += SIZE + 2;
 
             let token_word = &self.map[i..i + word_len];
 
@@ -263,9 +269,11 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
         while i < n {
             token_buf.copy_from_slice(&self.map[i..i + SIZE]);
 
-            let word_len = self.map[i + SIZE] as usize;
+            let word_len = u16::from_le_bytes([
+                self.map[i + SIZE], self.map[i + SIZE + 1]
+            ]) as usize;
 
-            i += SIZE + 1;
+            i += SIZE + 2;
 
             if token == T::decode(token_buf) {
                 return Some(String::from_utf8_lossy(&self.map[i..i + word_len]).to_string());
@@ -290,11 +298,12 @@ impl<const SIZE: usize, T: Token<SIZE>> TokensMap<SIZE, T> {
     /// Amount of stored tokens.
     pub fn len(&self) -> usize {
         let mut i = SIZE;
-        let n = self.map.len();
         let mut len = 0;
 
+        let n = self.map.len();
+
         while i < n {
-            i += self.map[i] as usize + SIZE + 1;
+            i += self.map[i] as usize + SIZE + 2;
             len += 1;
         }
 
@@ -331,7 +340,7 @@ fn test_tokens_map() -> anyhow::Result<()> {
     assert_ne!(hello_token, world_token);
 
     assert_eq!(map.len(), 2);
-    assert_eq!(map.size(), 16);
+    assert_eq!(map.size(), 18);
     assert_eq!(map.find_word(hello_token).as_deref(), Some("hello"));
     assert_eq!(map.find_word(world_token).as_deref(), Some("world"));
 
