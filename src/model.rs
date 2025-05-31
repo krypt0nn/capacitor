@@ -189,7 +189,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Return the parsed model.
 
-        keys.entry(String::from("model.tokenizer"))
+        keys.entry(String::from("model.tokens.tokenizer"))
             .or_insert(tokenizer.to_string());
 
         keys.entry(String::from("model.experts.total"))

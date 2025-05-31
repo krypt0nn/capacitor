@@ -73,6 +73,26 @@ fn main() -> anyhow::Result<()> {
             println!("Model saved as {:?}", output_path);
         }
 
+        Some("show") => {
+            let Some(path) = args.next().map(PathBuf::from) else {
+                anyhow::bail!("missing model file path");
+            };
+
+            if !path.is_file() {
+                anyhow::bail!("invalid model file path");
+            }
+
+            let model = Model16::open(std::fs::read(path)?)?;
+
+            if !model.keys().is_empty() {
+                println!("Keys:");
+            }
+
+            for (key, value) in model.keys() {
+                println!("  [{key:?}] = {value:?}");
+            }
+        }
+
         Some("run") => {
             let Some(path) = args.next().map(PathBuf::from) else {
                 anyhow::bail!("missing model file path");
@@ -123,6 +143,7 @@ fn main() -> anyhow::Result<()> {
             println!("capacitor help - show this help message");
             println!("capacitor new <recipe path> - save new example model file");
             println!("capacitor build <recipe path> - build the model");
+            println!("capacitor show <model path> - show model info");
             println!("capacitor run <model path> - open model evaluation interface");
         }
 
