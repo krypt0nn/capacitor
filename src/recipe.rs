@@ -108,11 +108,11 @@ impl Default for Recipe {
                 lowercase: true,
                 punctuation: false
             },
-            from_depth: 1,
+            from_depth: 2,
             to_depth: 1,
             total_experts: 4,
             active_experts: 1,
-            centroids: 0
+            centroids: 2
         }
     }
 }
