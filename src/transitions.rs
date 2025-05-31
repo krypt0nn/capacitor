@@ -8,7 +8,7 @@ use crate::tokens::Token;
 pub struct Transition<const SIZE: usize, T: Token<SIZE>> {
     pub from: Box<[T]>,
     pub to: Box<[T]>,
-    pub weight: u16
+    pub weight: u32
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -31,7 +31,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         let from_count = map[0] as usize;
         let to_count = map[1] as usize;
 
-        let record_size = from_count * SIZE + to_count * SIZE + 2;
+        let record_size = from_count * SIZE + to_count * SIZE + 4;
 
         if (map.len() - 2) % record_size != 0 {
             anyhow::bail!("invalid transitions map layout");
@@ -52,7 +52,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     }
 
     pub fn from_transitions<'tokens>(
-        transitions: impl IntoIterator<Item = (&'tokens [T], &'tokens [T], u16)>
+        transitions: impl IntoIterator<Item = (&'tokens [T], &'tokens [T], u32)>
     ) -> anyhow::Result<Self>
     where T: 'tokens
     {
@@ -80,21 +80,19 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
             }
         });
 
-        let mut map = Vec::with_capacity(2 + (SIZE * from_tokens + SIZE * to_tokens + 2) * transitions.len());
+        let record_size = SIZE * from_tokens + SIZE * to_tokens + 4;
+
+        let mut map = Vec::with_capacity(2 + record_size * transitions.len());
 
         map.push(from_tokens as u8);
         map.push(to_tokens as u8);
 
-        for (from, to, frequency) in transitions.drain(..) {
-            for token in from {
+        for (from, to, weight) in transitions.drain(..) {
+            for token in from.iter().chain(to.iter()) {
                 map.extend_from_slice(&token.encode());
             }
 
-            for token in to {
-                map.extend_from_slice(&token.encode());
-            }
-
-            map.extend_from_slice(&frequency.to_le_bytes());
+            map.extend_from_slice(&weight.to_le_bytes());
         }
 
         Self::open(map)
@@ -142,9 +140,9 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
             i += 1;
         }
 
-        let weight = u16::from_le_bytes([
-            self.map[offset + SIZE * i],
-            self.map[offset + SIZE * i + 1]
+        let weight = u32::from_le_bytes([
+            self.map[offset + SIZE * i    ], self.map[offset + SIZE * i + 1],
+            self.map[offset + SIZE * i + 2], self.map[offset + SIZE * i + 3]
         ]);
 
         Transition {
@@ -252,18 +250,18 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
 
         let from = &from[from.len() - match_len..];
 
-        (0..self.len())
-            .map(|i| self.read_transition(i))
-            .filter(|transition| {
-                &transition.from[from_count - match_len..] == from
+        if self.from_count == match_len {
+            self.binary_search(|transition| {
+                transition.from.as_ref().cmp(from)
             })
-            .collect()
-
-        // self.binary_search(|transition| {
-        //     let transition_from = &transition.from[from_count - match_len..];
-
-        //     transition_from.cmp(from)
-        // })
+        } else {
+            (0..self.len())
+                .map(|i| self.read_transition(i))
+                .filter(|transition| {
+                    &transition.from[from_count - match_len..] == from
+                })
+                .collect()
+        }
     }
 }
 
@@ -275,9 +273,9 @@ pub type TransitionsMap64 = TransitionsMap<8, u64>;
 #[test]
 fn test_transitions_map() -> anyhow::Result<()> {
     let transitions = TransitionsMap16::from_transitions([
-        ([1, 2].as_slice(), [3, 4].as_slice(), u16::MAX / 3),
-        ([2, 3].as_slice(), [4, 5].as_slice(), u16::MAX / 3),
-        ([3, 4].as_slice(), [5, 1].as_slice(), u16::MAX / 3)
+        ([1, 2].as_slice(), [3, 4].as_slice(), u32::MAX / 3),
+        ([2, 3].as_slice(), [4, 5].as_slice(), u32::MAX / 3),
+        ([3, 4].as_slice(), [5, 1].as_slice(), u32::MAX / 3)
     ])?;
 
     let list = transitions.read_list();
@@ -291,19 +289,19 @@ fn test_transitions_map() -> anyhow::Result<()> {
     assert_eq!(list[0], Transition {
         from: vec![1, 2].into_boxed_slice(),
         to: vec![3, 4].into_boxed_slice(),
-        weight: u16::MAX / 3
+        weight: u32::MAX / 3
     });
 
     assert_eq!(list[1], Transition {
         from: vec![2, 3].into_boxed_slice(),
         to: vec![4, 5].into_boxed_slice(),
-        weight: u16::MAX / 3
+        weight: u32::MAX / 3
     });
 
     assert_eq!(list[2], Transition {
         from: vec![3, 4].into_boxed_slice(),
         to: vec![5, 1].into_boxed_slice(),
-        weight: u16::MAX / 3
+        weight: u32::MAX / 3
     });
 
     assert_eq!(transitions.find_transitions([2]), HashSet::from_iter([list[0].clone()]));
@@ -316,11 +314,11 @@ fn test_transitions_map() -> anyhow::Result<()> {
     assert_eq!(transitions.find_transitions([3, 4]), HashSet::from_iter([list[2].clone()]));
 
     let transitions = TransitionsMap16::from_transitions([
-        ([1, 0].as_slice(), [1].as_slice(), u16::MAX / 5),
-        ([2, 0].as_slice(), [2].as_slice(), u16::MAX / 5),
-        ([3, 1].as_slice(), [3].as_slice(), u16::MAX / 5),
-        ([4, 1].as_slice(), [4].as_slice(), u16::MAX / 5),
-        ([5, 1].as_slice(), [5].as_slice(), u16::MAX / 5)
+        ([1, 0].as_slice(), [1].as_slice(), u32::MAX / 5),
+        ([2, 0].as_slice(), [2].as_slice(), u32::MAX / 5),
+        ([3, 1].as_slice(), [3].as_slice(), u32::MAX / 5),
+        ([4, 1].as_slice(), [4].as_slice(), u32::MAX / 5),
+        ([5, 1].as_slice(), [5].as_slice(), u32::MAX / 5)
     ])?;
 
     let list = transitions.read_list();

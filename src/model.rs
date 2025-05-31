@@ -19,13 +19,23 @@ pub struct Expert<const SIZE: usize, T: Token<SIZE>> {
 }
 
 impl<const SIZE: usize, T: Token<SIZE>> Expert<SIZE, T> {
+    #[inline(always)]
+    pub const fn cluster(&self) -> &Cluster<T> {
+        &self.cluster
+    }
+
+    #[inline(always)]
+    pub const fn transitions(&self) -> &TransitionsMap<SIZE, T> {
+        &self.transitions
+    }
+
     #[inline]
     pub fn distance(&self, document: impl IntoIterator<Item = T>) -> f32 {
         self.cluster.distance(document)
     }
 
     #[inline]
-    pub fn transitions(&self, from: impl AsRef<[T]>) -> HashSet<Transition<SIZE, T>> {
+    pub fn find_transitions(&self, from: impl AsRef<[T]>) -> HashSet<Transition<SIZE, T>> {
         self.transitions.find_transitions(from)
     }
 }
@@ -298,10 +308,11 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         // Tokenize documents.
 
         let mut tokens = HashMap::<String, T>::new();
+        let mut words = Vec::new();
         let mut token = T::zero();
 
-        let start_token = ("<|start|>", token);
-        let stop_token = ("<|stop|>", token.inc());
+        let start_token = (Self::START_TOKEN, token);
+        let stop_token = (Self::STOP_TOKEN, token.inc());
 
         tokens.insert(start_token.0.to_string(), start_token.1);
         tokens.insert(stop_token.0.to_string(), stop_token.1);
@@ -319,6 +330,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
                     if !tokens.contains_key(&word) {
                         tokens.insert(word.clone(), token);
+                        words.push(word.clone());
 
                         token = token.inc();
                     }
@@ -336,7 +348,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Create tokens map.
 
-        let tokens_map = TokensMap::<SIZE, T>::from_words(tokens.keys())?;
+        let tokens_map = TokensMap::<SIZE, T>::from_words(words)?;
 
         // Count transitions for every document.
 
@@ -387,7 +399,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             .map(|(transition, count)| {
                 let frequency = count as f32 / total_transitions as f32;
 
-                (transition.0, transition.1, (frequency * u16::MAX as f32) as u16)
+                (transition.0, transition.1, (frequency * u32::MAX as f32) as u32)
             })
             .collect::<Vec<_>>();
 
@@ -446,7 +458,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                 .map(|(transition, count)| {
                     let frequency = count as f32 / total_transitions as f32;
 
-                    (transition.0, transition.1, (frequency * u16::MAX as f32) as u16)
+                    (transition.0, transition.1, (frequency * u32::MAX as f32) as u32)
                 })
                 .collect::<Vec<_>>();
 
@@ -502,6 +514,11 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
     #[inline(always)]
     pub const fn keys(&self) -> &HashMap<String, String> {
         &self.keys
+    }
+
+    #[inline(always)]
+    pub const fn keys_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.keys
     }
 
     #[inline(always)]
@@ -571,8 +588,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         Ok(TokensGenerator {
             model: self,
+            sequence_ptr: sequence.len() - 1,
             sequence,
-            sequence_ptr: 0,
             rand,
             top_k,
             max_tokens
@@ -639,10 +656,30 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
         let mut transitions = self.model.transitions.find_transitions(&self.sequence)
             .into_iter()
+            .map(|transition| (
+                transition.from,
+                transition.to,
+                transition.weight as u64,
+                1.0
+            ))
             .collect::<Vec<_>>();
 
+        let total_distance = experts.iter()
+            .map(|expert| expert.1)
+            .sum::<f32>();
+
         for expert in experts {
-            transitions.extend(expert.0.transitions(&self.sequence));
+            let expert_transitions = expert.0.find_transitions(&self.sequence)
+                .into_iter()
+                .map(|transition| (
+                    transition.from,
+                    transition.to,
+                    transition.weight as u64,
+                    expert.1 / total_distance
+                ))
+                .collect::<Vec<_>>();
+
+            transitions.extend(expert_transitions);
         }
 
         // Resolve tokens if it's trivial.
@@ -652,11 +689,11 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
         }
 
         if transitions.len() == 1 {
-            if let Some(transition) = transitions.first() {
-                self.sequence.extend_from_slice(&transition.to);
+            if let Some((_, to, _, _)) = transitions.first() {
+                self.sequence.extend_from_slice(to);
                 self.sequence_ptr += 1;
 
-                let token = self.model.tokens.find_word(transition.to[0])?;
+                let token = self.model.tokens.find_word(to[0])?;
 
                 if token == Model::<SIZE, T>::STOP_TOKEN {
                     return None;
@@ -669,15 +706,25 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
         // Calculate normalized weights for each transition.
 
         let total_weight = transitions.iter()
-            .map(|transition| transition.weight as u64 + 1)
+            .map(|transition| transition.2 + 1)
             .sum::<u64>();
 
-        let mut transitions = transitions.into_iter()
-            .map(|transition| {
-                let weight = (transition.weight + 1) as f64 / total_weight as f64;
+        let raw_transitions = transitions.into_iter()
+            .map(|(from, to, weight, multiplier)| {
+                let weight = (weight + 1) as f64 / total_weight as f64 * multiplier as f64;
 
-                (transition.from, transition.to, weight)
+                (from, to, weight.max(f64::EPSILON))
             })
+            .collect::<Vec<_>>();
+
+        let mut transitions = HashMap::<(Box<[T]>, Box<[T]>), f64>::with_capacity(raw_transitions.len());
+
+        for (from, to, weight) in raw_transitions {
+            *transitions.entry((from, to)).or_default() += weight;
+        }
+
+        let mut transitions = transitions.into_iter()
+            .map(|(k, v)| (k.0, k.1, v))
             .collect::<Vec<_>>();
 
         transitions.sort_by(|a, b| {
@@ -685,8 +732,6 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
         });
 
         transitions.shrink_to(self.top_k);
-
-        dbg!(&transitions);
 
         // Predict the next token.
 
@@ -701,7 +746,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
         for (_, to, weight) in &transitions {
             curr_weight += *weight;
 
-            if curr_weight <= target_weight {
+            if curr_weight >= target_weight {
                 self.sequence.extend_from_slice(to);
                 self.sequence_ptr += 1;
 

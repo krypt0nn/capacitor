@@ -65,6 +65,8 @@ impl Iterator for WordTokenizerEncoder<'_> {
         let mut buf = [0; 1024];
 
         fn apply(mut word: &str, lowercase: bool, punctuation: bool) -> String {
+            word = word.trim();
+
             if !punctuation {
                 word = word.trim_matches(|c: char| c.is_ascii_punctuation());
             }
