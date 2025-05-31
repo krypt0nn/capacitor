@@ -176,7 +176,7 @@ fn test_word_tokenizer() -> anyhow::Result<()> {
         punctuation: false
     };
 
-    assert_eq!(tokenizer.encode(std::io::Cursor::new(b"Hello, World!")).collect::<anyhow::Result<Vec<String>>>()?, ["hello", "world"]);
+    assert_eq!(tokenizer.encode(std::io::Cursor::new(b"Hello,   World!")).collect::<anyhow::Result<Vec<String>>>()?, ["hello", "world"]);
     assert_eq!(tokenizer.decode([String::from("hello"), String::from("world")]).bytes().collect::<std::io::Result<Vec<u8>>>()?, b"hello world");
 
     Ok(())

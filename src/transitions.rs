@@ -74,7 +74,10 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         }
 
         transitions.sort_by(|a, b| {
-            a.0.cmp(b.0)
+            match a.0.cmp(b.0) {
+                Ordering::Equal => a.1.cmp(b.1),
+                ord => ord
+            }
         });
 
         let mut map = Vec::with_capacity(2 + (SIZE * from_tokens + SIZE * to_tokens + 2) * transitions.len());
@@ -100,7 +103,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     /// Amount of transitions stored in the map.
     #[inline]
     pub fn len(&self) -> usize {
-        (self.map.len() - 2) / (self.from_count * SIZE + self.to_count * SIZE + 2)
+        (self.map.len() - 2) / self.record_size
     }
 
     /// Amount of bytes stored in the transitions map.
@@ -176,8 +179,6 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         while left_idx <= right_idx {
             let middle_idx = (left_idx + right_idx).div_ceil(2);
 
-            dbg!(left_idx, right_idx, middle_idx);
-
             let transition = self.read_transition(middle_idx);
 
             match comparator(&transition) {
@@ -251,15 +252,18 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
 
         let from = &from[from.len() - match_len..];
 
-        self.binary_search(|transition| {
-            let transition_from = &transition.from[from_count - match_len..];
+        (0..self.len())
+            .map(|i| self.read_transition(i))
+            .filter(|transition| {
+                &transition.from[from_count - match_len..] == from
+            })
+            .collect()
 
-            dbg!(&from);
-            dbg!(&transition_from);
-            dbg!(transition_from.cmp(from));
+        // self.binary_search(|transition| {
+        //     let transition_from = &transition.from[from_count - match_len..];
 
-            transition_from.cmp(from)
-        })
+        //     transition_from.cmp(from)
+        // })
     }
 }
 

@@ -1,9 +1,11 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::iter::FusedIterator;
 
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaCha12Rng;
+use rand_chacha::rand_core::RngCore;
 
+use crate::rand;
 use crate::tokens::{Token, TokensMap};
 use crate::tokenizer::{Tokenizer, WordTokenizer};
 use crate::transitions::{Transition, TransitionsMap};
@@ -75,7 +77,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                 model[offset + 2]
             ]) as usize;
 
-            offset += 2;
+            offset += 3;
 
             let key = String::from_utf8_lossy(&model[offset..offset + key_len]);
             let value = String::from_utf8_lossy(&model[offset + key_len..offset + key_len + value_len]);
@@ -175,6 +177,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             let transitions = TransitionsMap::<SIZE, T>::open(&model[offset..offset + transitions_map_len])?;
 
+            offset += transitions_map_len;
+
             experts.push(Expert {
                 cluster: Cluster::from(cluster),
                 transitions
@@ -245,8 +249,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Encode experts.
 
-        let total_experts = self.experts.len() as u64;
-        let active_experts = self.active_experts as u64;
+        let total_experts = self.experts.len() as u32;
+        let active_experts = self.active_experts as u32;
 
         model.extend_from_slice(&total_experts.to_le_bytes());
         model.extend_from_slice(&active_experts.to_le_bytes());
@@ -391,17 +395,11 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Clusterize documents.
 
-        let micros = std::time::UNIX_EPOCH.elapsed()
-            .unwrap_or_default()
-            .as_micros();
-
-        let mut rand = ChaCha12Rng::seed_from_u64((micros & (u64::MAX as u128)) as u64);
-
         let clusters = clusterize(
             recipe.total_experts,
             recipe.centroids,
             &documents,
-            &mut rand
+            &mut rand()
         )?;
 
         // Assign each document to the closest cluster.
@@ -500,9 +498,248 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             experts: experts.into_boxed_slice()
         })
     }
+
+    #[inline(always)]
+    pub const fn keys(&self) -> &HashMap<String, String> {
+        &self.keys
+    }
+
+    #[inline(always)]
+    pub const fn tokenizer(&self) -> &RecipeTokenizer {
+        &self.tokenizer
+    }
+
+    #[inline(always)]
+    pub const fn tokens(&self) -> &TokensMap<SIZE, T> {
+        &self.tokens
+    }
+
+    #[inline(always)]
+    pub const fn transitions(&self) -> &TransitionsMap<SIZE, T> {
+        &self.transitions
+    }
+
+    #[inline(always)]
+    pub const fn active_experts(&self) -> usize {
+        self.active_experts
+    }
+
+    #[inline(always)]
+    pub const fn experts(&self) -> &[Expert<SIZE, T>] {
+        &self.experts
+    }
+
+    pub fn encode_tokens(&self, text: impl AsRef<str>) -> anyhow::Result<Box<[T]>> {
+        #[allow(irrefutable_let_patterns)]
+        let RecipeTokenizer::WordTokenizer { lowercase, punctuation } = self.tokenizer else {
+            anyhow::bail!("only word-tokenizer is currently supported");
+        };
+
+        let tokenizer = WordTokenizer { lowercase, punctuation };
+
+        let text = text.as_ref().as_bytes();
+
+        let mut tokens = Vec::new();
+
+        for token in tokenizer.encode(text) {
+            if let Some(token) = self.tokens.find_token(token?) {
+                tokens.push(token);
+            }
+        }
+
+        Ok(tokens.into_boxed_slice())
+    }
+
+    pub fn generate_tokens<'model, R: RngCore>(
+        &'model self,
+        sequence: impl Into<Vec<T>>,
+        rand: &'model mut R
+    ) -> anyhow::Result<TokensGenerator<'model, SIZE, T, R>> {
+        let top_k = self.keys.get("model.inference.top_k")
+            .map(|value| value.parse::<usize>())
+            .unwrap_or(Ok(10))?;
+
+        let max_tokens = self.keys.get("model.inference.max_tokens")
+            .map(|value| value.parse::<usize>())
+            .unwrap_or(Ok(200))?;
+
+        let sequence: Vec<T> = sequence.into();
+
+        // if let Some(token) = self.tokens.find_token(Self::START_TOKEN) {
+        //     sequence.insert(0, token);
+        // }
+
+        Ok(TokensGenerator {
+            model: self,
+            sequence,
+            sequence_ptr: 0,
+            rand,
+            top_k,
+            max_tokens
+        })
+    }
 }
 
 pub type Model8 = Model<1, u8>;
 pub type Model16 = Model<2, u16>;
 pub type Model32 = Model<4, u32>;
 pub type Model64 = Model<8, u64>;
+
+#[derive(Debug)]
+pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore> {
+    model: &'model Model<SIZE, T>,
+    sequence: Vec<T>,
+    sequence_ptr: usize,
+    rand: &'model mut R,
+
+    /// Amount of best match token to randomly choose from.
+    top_k: usize,
+
+    /// Maximal amount of tokens to generate.
+    max_tokens: usize
+}
+
+impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator<'_, SIZE, T, R> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.top_k == 0 || self.sequence.len() >= self.max_tokens {
+            return None;
+        }
+
+        if let Some(token) = self.sequence.get(self.sequence_ptr + 1) {
+            self.sequence_ptr += 1;
+
+            let token = self.model.tokens.find_word(*token)?;
+
+            if token == Model::<SIZE, T>::STOP_TOKEN {
+                return None;
+            }
+
+            return Some(token);
+        }
+
+        // Find best experts for the current tokens stream.
+
+        let mut experts = Vec::with_capacity(self.model.experts.len());
+
+        for expert in &self.model.experts {
+            let distance = expert.distance(self.sequence.iter().copied());
+
+            experts.push((expert, distance));
+        }
+
+        experts.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
+        });
+
+        experts.shrink_to(self.model.active_experts);
+
+        // Find transitions from the base model and loaded experts.
+
+        let mut transitions = self.model.transitions.find_transitions(&self.sequence)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        for expert in experts {
+            transitions.extend(expert.0.transitions(&self.sequence));
+        }
+
+        // Resolve tokens if it's trivial.
+
+        if transitions.is_empty() {
+            return None;
+        }
+
+        if transitions.len() == 1 {
+            if let Some(transition) = transitions.first() {
+                self.sequence.extend_from_slice(&transition.to);
+                self.sequence_ptr += 1;
+
+                let token = self.model.tokens.find_word(transition.to[0])?;
+
+                if token == Model::<SIZE, T>::STOP_TOKEN {
+                    return None;
+                }
+
+                return Some(token);
+            }
+        }
+
+        // Calculate normalized weights for each transition.
+
+        let total_weight = transitions.iter()
+            .map(|transition| transition.weight as u64 + 1)
+            .sum::<u64>();
+
+        let mut transitions = transitions.into_iter()
+            .map(|transition| {
+                let weight = (transition.weight + 1) as f64 / total_weight as f64;
+
+                (transition.from, transition.to, weight)
+            })
+            .collect::<Vec<_>>();
+
+        transitions.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal)
+        });
+
+        transitions.shrink_to(self.top_k);
+
+        dbg!(&transitions);
+
+        // Predict the next token.
+
+        let total_weight = transitions.iter()
+            .map(|transition| transition.2)
+            .sum::<f64>();
+
+        let target_weight = self.rand.next_u32() as f64 / u32::MAX as f64 * total_weight;
+
+        let mut curr_weight = 0.0;
+
+        for (_, to, weight) in &transitions {
+            curr_weight += *weight;
+
+            if curr_weight <= target_weight {
+                self.sequence.extend_from_slice(to);
+                self.sequence_ptr += 1;
+
+                let token = self.model.tokens.find_word(to[0])?;
+
+                if token == Model::<SIZE, T>::STOP_TOKEN {
+                    return None;
+                }
+
+                return Some(token);
+            }
+        }
+
+        self.sequence.extend_from_slice(&transitions[0].1);
+        self.sequence_ptr += 1;
+
+        let token = self.model.tokens.find_word(transitions[0].1[0])?;
+
+        if token == Model::<SIZE, T>::STOP_TOKEN {
+            return None;
+        }
+
+        Some(token)
+    }
+}
+
+impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> FusedIterator for TokensGenerator<'_, SIZE, T, R> {}
+
+// #[derive(Debug)]
+// pub struct TextGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore> {
+//     tokens: TokensGenerator<'model, SIZE, T, R>,
+//     buf: Vec<u8>
+// }
+
+// impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Read for TextGenerator<'_, SIZE, T, R> {
+//     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+//         if let Some(token) = self.tokens.next() {
+
+//         }
+//     }
+// }

@@ -1,5 +1,9 @@
+use std::io::Write;
 use std::str::FromStr;
 use std::path::PathBuf;
+
+use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaCha12Rng;
 
 pub mod tokens;
 pub mod tokenizer;
@@ -8,8 +12,17 @@ pub mod clustering;
 pub mod recipe;
 pub mod model;
 
-use recipe::Recipe;
+use tokenizer::{Tokenizer, WordTokenizer};
+use recipe::{Recipe, Tokenizer as RecipeTokenizer};
 use model::Model16;
+
+pub fn rand() -> impl RngCore {
+    let micros = std::time::UNIX_EPOCH.elapsed()
+        .unwrap_or_default()
+        .as_micros();
+
+    ChaCha12Rng::seed_from_u64((micros & (u64::MAX as u128)) as u64)
+}
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -60,10 +73,57 @@ fn main() -> anyhow::Result<()> {
             println!("Model saved as {:?}", output_path);
         }
 
+        Some("run") => {
+            let Some(path) = args.next().map(PathBuf::from) else {
+                anyhow::bail!("missing model file path");
+            };
+
+            if !path.is_file() {
+                anyhow::bail!("invalid model file path");
+            }
+
+            let mut stdout = std::io::stdout();
+
+            stdout.write_all(b"Loading model...")?;
+            stdout.flush()?;
+
+            let model = Model16::open(std::fs::read(path)?)?;
+            let mut rand = rand();
+
+            #[allow(irrefutable_let_patterns)]
+            let RecipeTokenizer::WordTokenizer { lowercase, punctuation } = model.tokenizer() else {
+                anyhow::bail!("only word-tokenizer is currently supported");
+            };
+
+            let tokenizer = WordTokenizer {
+                lowercase: *lowercase,
+                punctuation: *punctuation
+            };
+
+            let stdin = std::io::stdin();
+
+            loop {
+                stdout.write_all(b"\n\n> ")?;
+                stdout.flush()?;
+
+                let mut query = String::new();
+
+                stdin.read_line(&mut query)?;
+
+                let query = model.encode_tokens(query.trim())?;
+                let generator = model.generate_tokens(query, &mut rand)?;
+
+                let mut decoder = tokenizer.decode(generator);
+
+                std::io::copy(&mut decoder, &mut stdout)?;
+            }
+        }
+
         Some("help") | None => {
             println!("capacitor help - show this help message");
             println!("capacitor new <recipe path> - save new example model file");
             println!("capacitor build <recipe path> - build the model");
+            println!("capacitor run <model path> - open model evaluation interface");
         }
 
         Some(command) => anyhow::bail!("unknown command: {command}")
