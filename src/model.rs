@@ -440,3 +440,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         })
     }
 }
+
+pub type Model8 = Model<1, u8>;
+pub type Model16 = Model<2, u16>;
+pub type Model32 = Model<4, u32>;
+pub type Model64 = Model<8, u64>;
