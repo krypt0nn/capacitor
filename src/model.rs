@@ -43,10 +43,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Expert<SIZE, T> {
 #[derive(Debug, Clone)]
 pub struct Model<const SIZE: usize, T: Token<SIZE>> {
     keys: HashMap<String, String>,
-    tokenizer: RecipeTokenizer,
     tokens: TokensMap<SIZE, T>,
     transitions: TransitionsMap<SIZE, T>,
-    active_experts: usize,
     experts: Box<[Expert<SIZE, T>]>
 }
 
@@ -98,18 +96,6 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             keys.insert(key.to_string(), value.to_string());
         }
 
-        // Read tokenizer.
-
-        let tokenizer_len = u16::from_le_bytes([
-            model[offset], model[offset + 1]
-        ]) as usize;
-
-        offset += 2;
-
-        let tokenizer = RecipeTokenizer::from_str(&String::from_utf8_lossy(&model[offset..offset + tokenizer_len]))?;
-
-        offset += tokenizer_len;
-
         // Read tokens map.
 
         let tokens_map_len = u64::from_le_bytes([
@@ -143,12 +129,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             model[offset + 2], model[offset + 3]
         ]) as usize;
 
-        let active_experts = u32::from_le_bytes([
-            model[offset + 4], model[offset + 5],
-            model[offset + 6], model[offset + 7]
-        ]) as usize;
-
-        offset += 8;
+        offset += 4;
         i = 0;
 
         let mut experts = Vec::with_capacity(total_experts);
@@ -199,21 +180,10 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Return the parsed model.
 
-        keys.entry(String::from("model.tokens.tokenizer"))
-            .or_insert(tokenizer.to_string());
-
-        keys.entry(String::from("model.experts.total"))
-            .or_insert(experts.len().to_string());
-
-        keys.entry(String::from("model.experts.active"))
-            .or_insert(active_experts.to_string());
-
         Ok(Self {
             keys,
-            tokenizer,
             tokens: tokens_map,
             transitions: transitions_map,
-            active_experts,
             experts: experts.into_boxed_slice()
         })
     }
@@ -236,13 +206,6 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             model.extend_from_slice(value.as_bytes());
         }
 
-        // Encode tokenizer.
-
-        let tokenizer = self.tokenizer.to_string();
-
-        model.extend_from_slice(&(tokenizer.len() as u16).to_le_bytes());
-        model.extend(tokenizer.as_bytes());
-
         // Encode tokens map.
 
         let tokens = self.tokens.into_inner();
@@ -259,11 +222,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Encode experts.
 
-        let total_experts = self.experts.len() as u32;
-        let active_experts = self.active_experts as u32;
-
-        model.extend_from_slice(&total_experts.to_le_bytes());
-        model.extend_from_slice(&active_experts.to_le_bytes());
+        model.extend_from_slice(&(self.experts.len() as u32).to_le_bytes());
 
         for expert in self.experts {
             let cluster = expert.cluster.into_inner();
@@ -503,16 +462,14 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         Ok(Self {
             keys: recipe.keys,
-            tokenizer: recipe.tokenizer,
             tokens: tokens_map,
             transitions: transitions_map,
-            active_experts: recipe.active_experts,
             experts: experts.into_boxed_slice()
         })
     }
 
     #[inline(always)]
-    pub const fn keys(&self) -> &HashMap<String, String> {
+    pub const fn keys_ref(&self) -> &HashMap<String, String> {
         &self.keys
     }
 
@@ -522,33 +479,31 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
     }
 
     #[inline(always)]
-    pub const fn tokenizer(&self) -> &RecipeTokenizer {
-        &self.tokenizer
-    }
-
-    #[inline(always)]
-    pub const fn tokens(&self) -> &TokensMap<SIZE, T> {
+    pub const fn tokens_ref(&self) -> &TokensMap<SIZE, T> {
         &self.tokens
     }
 
     #[inline(always)]
-    pub const fn transitions(&self) -> &TransitionsMap<SIZE, T> {
+    pub const fn transitions_ref(&self) -> &TransitionsMap<SIZE, T> {
         &self.transitions
     }
 
     #[inline(always)]
-    pub const fn active_experts(&self) -> usize {
-        self.active_experts
+    pub const fn experts_ref(&self) -> &[Expert<SIZE, T>] {
+        &self.experts
     }
 
-    #[inline(always)]
-    pub const fn experts(&self) -> &[Expert<SIZE, T>] {
-        &self.experts
+    pub fn get_tokenizer(&self) -> anyhow::Result<Option<RecipeTokenizer>> {
+        let Some(tokenizer) = self.keys.get("model.tokens.tokenizer") else {
+            return Ok(None);
+        };
+
+        Ok(Some(RecipeTokenizer::from_str(tokenizer)?))
     }
 
     pub fn encode_tokens(&self, text: impl AsRef<str>) -> anyhow::Result<Box<[T]>> {
         #[allow(irrefutable_let_patterns)]
-        let RecipeTokenizer::WordTokenizer { lowercase, punctuation } = self.tokenizer else {
+        let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = self.get_tokenizer()? else {
             anyhow::bail!("only word-tokenizer is currently supported");
         };
 
@@ -572,6 +527,10 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         sequence: impl Into<Vec<T>>,
         rand: &'model mut R
     ) -> anyhow::Result<TokensGenerator<'model, SIZE, T, R>> {
+        let active_experts = self.keys.get("model.experts.active")
+            .map(|value| value.parse::<usize>())
+            .unwrap_or(Ok(0))?;
+
         let top_k = self.keys.get("model.inference.top_k")
             .map(|value| value.parse::<usize>())
             .unwrap_or(Ok(10))?;
@@ -591,6 +550,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             sequence_ptr: sequence.len() - 1,
             sequence,
             rand,
+            active_experts,
             top_k,
             max_tokens
         })
@@ -608,6 +568,9 @@ pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore
     sequence: Vec<T>,
     sequence_ptr: usize,
     rand: &'model mut R,
+
+    /// Amount of experts to use for each token generation.
+    active_experts: usize,
 
     /// Amount of best match token to randomly choose from.
     top_k: usize,
@@ -638,7 +601,9 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
         // Find best experts for the current tokens stream.
 
-        let mut experts = Vec::with_capacity(self.model.experts.len());
+        let total_experts = self.model.experts.len();
+
+        let mut experts = Vec::with_capacity(total_experts);
 
         for expert in &self.model.experts {
             let distance = expert.distance(self.sequence.iter().copied());
@@ -650,7 +615,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
             b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
         });
 
-        experts.shrink_to(self.model.active_experts);
+        experts.shrink_to(self.active_experts);
 
         // Find transitions from the base model and loaded experts.
 
@@ -675,7 +640,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
                     transition.from,
                     transition.to,
                     transition.weight as u64,
-                    expert.1 / total_distance
+                    expert.1 / total_distance * total_experts as f32
                 ))
                 .collect::<Vec<_>>();
 

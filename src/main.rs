@@ -94,14 +94,11 @@ fn main() -> anyhow::Result<()> {
             let mut rand = rand();
 
             #[allow(irrefutable_let_patterns)]
-            let RecipeTokenizer::WordTokenizer { lowercase, punctuation } = model.tokenizer() else {
+            let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = model.get_tokenizer()? else {
                 anyhow::bail!("only word-tokenizer is currently supported");
             };
 
-            let tokenizer = WordTokenizer {
-                lowercase: *lowercase,
-                punctuation: *punctuation
-            };
+            let tokenizer = WordTokenizer { lowercase, punctuation };
 
             let stdin = std::io::stdin();
 
@@ -144,19 +141,19 @@ fn main() -> anyhow::Result<()> {
 
             let model = Model::open(std::fs::read(path)?)?;
 
-            println!("Base model transitions: {}", model.transitions().read_list().len());
+            println!("Base model transitions: {}", model.transitions_ref().read_list().len());
 
-            for (i, expert) in model.experts().iter().enumerate() {
+            for (i, expert) in model.experts_ref().iter().enumerate() {
                 println!("Expert #{} transitions: {}", i + 1, expert.transitions().len());
             }
 
             println!();
 
-            if !model.keys().is_empty() {
+            if !model.keys_ref().is_empty() {
                 println!("Keys:");
             }
 
-            for (key, value) in model.keys() {
+            for (key, value) in model.keys_ref() {
                 println!("  [{key:?}] = {value:?}");
             }
 
@@ -164,14 +161,11 @@ fn main() -> anyhow::Result<()> {
             let stdin = std::io::stdin();
 
             #[allow(irrefutable_let_patterns)]
-            let RecipeTokenizer::WordTokenizer { lowercase, punctuation } = model.tokenizer() else {
+            let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = model.get_tokenizer()? else {
                 anyhow::bail!("only word-tokenizer is currently supported");
             };
 
-            let tokenizer = WordTokenizer {
-                lowercase: *lowercase,
-                punctuation: *punctuation
-            };
+            let tokenizer = WordTokenizer { lowercase, punctuation };
 
             loop {
                 stdout.write_all(b"\n\n> ")?;
@@ -192,7 +186,8 @@ fn main() -> anyhow::Result<()> {
                 stdout.write_all(b"\n\n")?;
                 stdout.flush()?;
 
-                let transitions = model.transitions().find_transitions(&query);
+                let transitions = model.transitions_ref()
+                    .find_transitions(&query);
 
                 if !transitions.is_empty() {
                     stdout.write_all(b"Base model:\n")?;
@@ -200,7 +195,9 @@ fn main() -> anyhow::Result<()> {
 
                     for transition in transitions {
                         let to = transition.to.iter()
-                            .flat_map(|token| model.tokens().find_word(*token));
+                            .flat_map(|token| {
+                                model.tokens_ref().find_word(*token)
+                            });
 
                         let mut to_str = String::new();
 
@@ -252,7 +249,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("token,word");
 
-            for (token, word) in model.tokens().as_table() {
+            for (token, word) in model.tokens_ref().as_table() {
                 println!("{token},\"{}\"", word.replace('"', "\\\""));
             }
         }
@@ -270,7 +267,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("from,to,weight");
 
-            for transition in model.transitions().read_list() {
+            for transition in model.transitions_ref().read_list() {
                 println!(
                     "\"{:?}\",\"{:?}\",{}",
                     transition.from,
