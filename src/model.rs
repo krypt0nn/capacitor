@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -30,6 +31,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Expert<SIZE, T> {
 #[derive(Debug, Clone)]
 pub struct Model<const SIZE: usize, T: Token<SIZE>> {
     keys: HashMap<String, String>,
+    tokenizer: RecipeTokenizer,
     tokens: TokensMap<SIZE, T>,
     transitions: TransitionsMap<SIZE, T>,
     active_experts: usize,
@@ -83,6 +85,18 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             keys.insert(key.to_string(), value.to_string());
         }
+
+        // Read tokenizer.
+
+        let tokenizer_len = u16::from_le_bytes([
+            model[offset], model[offset + 1]
+        ]) as usize;
+
+        offset += 2;
+
+        let tokenizer = RecipeTokenizer::from_str(&String::from_utf8_lossy(&model[offset..offset + tokenizer_len]))?;
+
+        offset += tokenizer_len;
 
         // Read tokens map.
 
@@ -171,8 +185,18 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Return the parsed model.
 
+        keys.entry(String::from("model.tokenizer"))
+            .or_insert(tokenizer.to_string());
+
+        keys.entry(String::from("model.experts.total"))
+            .or_insert(experts.len().to_string());
+
+        keys.entry(String::from("model.experts.active"))
+            .or_insert(active_experts.to_string());
+
         Ok(Self {
             keys,
+            tokenizer,
             tokens: tokens_map,
             transitions: transitions_map,
             active_experts,
@@ -197,6 +221,13 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             model.extend_from_slice(key.as_bytes());
             model.extend_from_slice(value.as_bytes());
         }
+
+        // Encode tokenizer.
+
+        let tokenizer = self.tokenizer.to_string();
+
+        model.extend_from_slice(&(tokenizer.len() as u16).to_le_bytes());
+        model.extend(tokenizer.as_bytes());
 
         // Encode tokens map.
 
@@ -238,7 +269,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         model.into_boxed_slice()
     }
 
-    pub fn build(recipe: Recipe) -> anyhow::Result<Self> {
+    pub fn build(mut recipe: Recipe) -> anyhow::Result<Self> {
         // Read documents from the dataset files.
 
         let mut documents = Vec::with_capacity(recipe.files.len());
@@ -429,10 +460,40 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             });
         }
 
+        // Prefill default metadata keys.
+
+        recipe.keys.entry(String::from("model.name"))
+            .or_insert(recipe.name.clone());
+
+        recipe.keys.entry(String::from("model.tokens.tokenizer"))
+            .or_insert(recipe.tokenizer.to_string());
+
+        recipe.keys.entry(String::from("model.tokens.from_depth"))
+            .or_insert(recipe.from_depth.to_string());
+
+        recipe.keys.entry(String::from("model.tokens.to_depth"))
+            .or_insert(recipe.to_depth.to_string());
+
+        recipe.keys.entry(String::from("model.tokens.start_token"))
+            .or_insert(Self::START_TOKEN.to_string());
+
+        recipe.keys.entry(String::from("model.tokens.stop_token"))
+            .or_insert(Self::STOP_TOKEN.to_string());
+
+        recipe.keys.entry(String::from("model.experts.total"))
+            .or_insert(experts.len().to_string());
+
+        recipe.keys.entry(String::from("model.experts.active"))
+            .or_insert(recipe.active_experts.to_string());
+
+        recipe.keys.entry(String::from("model.experts.centroids"))
+            .or_insert(recipe.centroids.to_string());
+
         // Build the model.
 
         Ok(Self {
             keys: recipe.keys,
+            tokenizer: recipe.tokenizer,
             tokens: tokens_map,
             transitions: transitions_map,
             active_experts: recipe.active_experts,
