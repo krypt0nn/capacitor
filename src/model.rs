@@ -30,8 +30,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Expert<SIZE, T> {
     }
 
     #[inline]
-    pub fn distance(&self, document: impl IntoIterator<Item = T>) -> f32 {
-        self.cluster.distance(document)
+    pub fn similarity(&self, document: impl IntoIterator<Item = T>) -> f32 {
+        self.cluster.similarity(document)
     }
 
     #[inline]
@@ -379,14 +379,14 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         for document in &documents {
             let mut document_cluster = 0;
-            let mut distance = f32::MAX;
+            let mut similarity = f32::MIN;
 
             for (i, cluster) in clusters.iter().enumerate() {
-                let cluster_distance = cluster.distance(document.iter().copied());
+                let cluster_similarity = cluster.similarity(document.iter().copied());
 
-                if cluster_distance < distance {
+                if cluster_similarity > similarity {
                     document_cluster = i;
-                    distance = cluster_distance;
+                    similarity = cluster_similarity;
                 }
             }
 
@@ -606,13 +606,13 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
         let mut experts = Vec::with_capacity(total_experts);
 
         for expert in &self.model.experts {
-            let distance = expert.distance(self.sequence.iter().copied());
+            let similarity = expert.similarity(self.sequence.iter().copied());
 
-            experts.push((expert, distance));
+            experts.push((expert, similarity));
         }
 
         experts.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)
+            b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
         });
 
         experts.shrink_to(self.active_experts);
@@ -629,7 +629,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
             ))
             .collect::<Vec<_>>();
 
-        let total_distance = experts.iter()
+        let total_similarity = experts.iter()
             .map(|expert| expert.1)
             .sum::<f32>();
 
@@ -640,7 +640,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
                     transition.from,
                     transition.to,
                     transition.weight as u64,
-                    expert.1 / total_distance * total_experts as f32
+                    expert.1 / total_similarity * total_experts as f32
                 ))
                 .collect::<Vec<_>>();
 

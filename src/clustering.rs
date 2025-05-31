@@ -21,17 +21,17 @@ impl<T: PartialEq + Eq + std::hash::Hash> Cluster<T> {
         self.ranks
     }
 
-    /// Calculate distance from the current cluster to the given document.
-    pub fn distance(&self, document: impl IntoIterator<Item = T>) -> f32 {
-        let mut distance = 0.0;
+    /// Calculate similarity between the current cluster to the given document.
+    pub fn similarity(&self, document: impl IntoIterator<Item = T>) -> f32 {
+        let mut similarity = 0.0;
 
         for token in document {
             if let Some(rank) = self.ranks.get(&token) {
-                distance += *rank;
+                similarity += *rank;
             }
         }
 
-        distance
+        similarity
     }
 }
 
