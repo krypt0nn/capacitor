@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -88,6 +88,16 @@ pub struct Recipe {
     pub centroids: usize
 }
 
+impl Recipe {
+    pub fn relative_to(mut self, folder: impl AsRef<Path>) -> Self {
+        for file in &mut self.files {
+            file.path = folder.as_ref().join(&file.path);
+        }
+
+        self
+    }
+}
+
 impl Default for Recipe {
     fn default() -> Self {
         Self {
@@ -127,7 +137,8 @@ impl std::fmt::Display for Recipe {
             format!("Name {}", self.name),
             format!("Tokenizer {}", self.tokenizer),
             format!("Depth {}/{}", self.from_depth, self.to_depth),
-            format!("Experts {}/{}", self.active_experts, self.total_experts)
+            format!("Experts {}/{}", self.active_experts, self.total_experts),
+            format!("Centroids {}", self.centroids)
         ];
 
         if !keys.is_empty() {
