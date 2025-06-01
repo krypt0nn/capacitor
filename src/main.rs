@@ -249,7 +249,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("token,word");
 
-            for (token, word) in model.tokens_ref().as_table() {
+            for (token, word) in model.tokens_ref().as_tokens_table() {
                 println!("{token},\"{}\"", word.replace('"', "\\\""));
             }
         }

@@ -62,8 +62,6 @@ impl Iterator for WordTokenizerEncoder<'_> {
     type Item = anyhow::Result<String>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buf = [0; 1024];
-
         fn apply(mut word: &str, lowercase: bool, punctuation: bool) -> String {
             word = word.trim();
 
@@ -77,6 +75,8 @@ impl Iterator for WordTokenizerEncoder<'_> {
                 word.to_string()
             }
         }
+
+        let mut buf = [0; 1024];
 
         loop {
             let mut i = 0;

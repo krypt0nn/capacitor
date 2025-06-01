@@ -266,48 +266,41 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Tokenize documents.
 
-        let mut tokens = HashMap::<String, T>::new();
-        let mut words = HashSet::new();
-        let mut token = T::zero();
-
-        let start_token = (Self::START_TOKEN, token);
-        let stop_token = (Self::STOP_TOKEN, token.inc());
-
-        tokens.insert(start_token.0.to_string(), start_token.1);
-        tokens.insert(stop_token.0.to_string(), stop_token.1);
-
-        token = token.inc().inc();
-
         let documents = documents.into_iter()
             .map(|document| {
                 let mut tokenized_document = Vec::new();
 
-                tokenized_document.push(start_token.1);
+                tokenized_document.push(Self::START_TOKEN.to_string());
 
                 for word in tokenizer.encode(document.as_bytes()) {
-                    let word = word?;
-
-                    if !tokens.contains_key(&word) {
-                        tokens.insert(word.clone(), token);
-                        words.insert(word.clone());
-
-                        token = token.inc();
-                    }
-
-                    let token = tokens.get(&word).unwrap_or(&token);
-
-                    tokenized_document.push(*token);
+                    tokenized_document.push(word?);
                 }
 
-                tokenized_document.push(stop_token.1);
+                tokenized_document.push(Self::STOP_TOKEN.to_string());
 
-                Ok(tokenized_document.into_boxed_slice())
+                Ok(tokenized_document)
             })
-            .collect::<anyhow::Result<Vec<Box<[T]>>>>()?;
+            .collect::<anyhow::Result<Vec<Vec<String>>>>()?;
 
-        // Create tokens map.
+        let words = documents.iter()
+            .flat_map(|document| document.iter())
+            .collect::<HashSet<_>>();
 
         let tokens_map = TokensMap::<SIZE, T>::from_words(words)?;
+
+        // Hack for faster documents tokenization because `find_token` is O(n)
+        // and hashmap is O(1).
+        let tokens_table = tokens_map.as_words_table();
+
+        let documents = documents.into_iter()
+            .map(|document| {
+                document.into_iter()
+                    .flat_map(|word| tokens_table.get(&word).cloned())
+                    .collect::<Box<[T]>>()
+            })
+            .collect::<Box<[Box<[T]>]>>();
+
+        drop(tokens_table);
 
         // Count transitions for every document.
 
