@@ -739,7 +739,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
                     transition.from,
                     transition.to,
                     transition.weight as u64,
-                    expert.2 / total_similarity * total_experts as f32
+                    expert.2 / total_similarity * (total_experts as f32 / self.active_experts as f32).sqrt()
                 ))
                 .collect::<Vec<_>>();
 
