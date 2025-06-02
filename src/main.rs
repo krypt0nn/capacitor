@@ -157,7 +157,7 @@ fn main() -> anyhow::Result<()> {
                         stdout.flush()?;
                     }
 
-                    stdout.write_all(b"\nExperts use:\n")?;
+                    stdout.write_all(b"\n\nExperts use:\n")?;
 
                     let stats = generator.stats();
                     let mut experts_usage = Vec::new();

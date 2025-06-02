@@ -602,6 +602,13 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             sequence_ptr: query.len() - 1,
             sequence: query.to_vec(),
             rand,
+            stats: TokensGeneratorStats {
+                experts_use: HashMap::from_iter({
+                    self.experts.iter()
+                        .enumerate()
+                        .map(|(i, _)| (i, 0))
+                })
+            },
             stop_tokens,
             active_experts,
             top_k,
@@ -615,12 +622,36 @@ pub type Model16 = Model<2, u16>;
 pub type Model32 = Model<4, u32>;
 pub type Model64 = Model<8, u64>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokensGeneratorStats {
+    experts_use: HashMap<usize, usize>
+}
+
+impl TokensGeneratorStats {
+    /// Get total amount of experts.
+    pub fn total_experts(&self) -> usize {
+        self.experts_use.keys().count()
+    }
+
+    /// Get use frequency for given expert index.
+    pub fn expert_frequency(&self, expert: usize) -> Option<f32> {
+        let total_calls = self.experts_use.values()
+            .copied()
+            .sum::<usize>();
+
+        self.experts_use.get(&expert)
+            .map(|calls| *calls as f32 / total_calls as f32)
+    }
+}
+
 #[derive(Debug)]
 pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore> {
     model: &'model Model<SIZE, T>,
     sequence: Vec<T>,
     sequence_ptr: usize,
     rand: &'model mut R,
+
+    stats: TokensGeneratorStats,
 
     /// Tokens after which the inference must be stopped.
     stop_tokens: Vec<String>,
@@ -633,6 +664,13 @@ pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore
 
     /// Maximal amount of tokens to generate.
     max_tokens: usize
+}
+
+impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> TokensGenerator<'_, SIZE, T, R> {
+    #[inline(always)]
+    pub const fn stats(&self) -> &TokensGeneratorStats {
+        &self.stats
+    }
 }
 
 impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator<'_, SIZE, T, R> {
@@ -661,17 +699,22 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
         let mut experts = Vec::with_capacity(total_experts);
 
-        for expert in &self.model.experts {
+        for (i, expert) in self.model.experts.iter().enumerate() {
             let similarity = expert.similarity(self.sequence.iter().copied());
 
-            experts.push((expert, similarity));
+            experts.push((i, expert, similarity));
         }
 
         experts.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
+            b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal)
         });
 
-        experts.shrink_to(self.active_experts);
+        experts.truncate(self.active_experts);
+
+        for (i, _, _) in &experts {
+            *self.stats.experts_use.entry(*i)
+                .or_default() += 1;
+        }
 
         // Find transitions from the base model and loaded experts.
 
@@ -686,17 +729,17 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
             .collect::<Vec<_>>();
 
         let total_similarity = experts.iter()
-            .map(|expert| expert.1)
+            .map(|expert| expert.2)
             .sum::<f32>();
 
         for expert in experts {
-            let expert_transitions = expert.0.find_transitions(&self.sequence)
+            let expert_transitions = expert.1.find_transitions(&self.sequence)
                 .into_iter()
                 .map(|transition| (
                     transition.from,
                     transition.to,
                     transition.weight as u64,
-                    expert.1 / total_similarity * total_experts as f32
+                    expert.2 / total_similarity * total_experts as f32
                 ))
                 .collect::<Vec<_>>();
 
@@ -752,7 +795,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
             b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal)
         });
 
-        transitions.shrink_to(self.top_k);
+        transitions.truncate(self.top_k);
 
         // Predict the next token.
 
