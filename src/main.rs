@@ -330,15 +330,300 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        #[cfg(feature = "http-api")]
+        Some("serve") => {
+            use std::sync::Mutex;
+            use std::collections::HashMap;
+            use std::time::{Instant, UNIX_EPOCH};
+
+            use rouille::Response;
+            use serde_json::json;
+
+            let address = args.next().unwrap_or_else(|| String::from("0.0.0.0:8080"));
+
+            let models = Mutex::new(HashMap::new());
+
+            struct ModelInfo {
+                pub model: QuantizedModel,
+                pub loaded_at: Instant,
+                pub loaded_timestamp: u64,
+                pub requests_count: usize
+            }
+
+            println!("Started HTTP REST API server at {address}");
+
+            rouille::start_server(address, move |request| {
+                if request.method() != "GET" {
+                    return Response::empty_404();
+                }
+
+                println!("[{}] {}", request.remote_addr(), request.raw_url());
+
+                match request.url().as_str() {
+                    "/api/v1/load" => {
+                        let Some(path) = request.get_param("model") else {
+                            return Response::json(&json!({
+                                "type": "error",
+                                "error": "model path is missing"
+                            }));
+                        };
+
+                        let model = match std::fs::read(&path) {
+                            Ok(model) => model,
+                            Err(err) => {
+                                return Response::json(&json!({
+                                    "type": "error",
+                                    "error": "failed to load model",
+                                    "context": err.to_string(),
+                                    "path": &path
+                                }));
+                            }
+                        };
+
+                        let model = match QuantizedModel::open(model) {
+                            Ok(model) => model,
+                            Err(err) => {
+                                return Response::json(&json!({
+                                    "type": "error",
+                                    "error": "failed to load model",
+                                    "context": err.to_string(),
+                                    "path": &path
+                                }));
+                            }
+                        };
+
+                        match models.lock() {
+                            Ok(mut models) => {
+                                models.insert(path, ModelInfo {
+                                    model,
+                                    loaded_at: Instant::now(),
+                                    loaded_timestamp: UNIX_EPOCH.elapsed()
+                                        .unwrap_or_default()
+                                        .as_secs(),
+                                    requests_count: 0
+                                });
+
+                                Response::json(&json!({
+                                    "status": "success"
+                                }))
+                            }
+
+                            Err(err) => {
+                                Response::json(&json!({
+                                    "type": "error",
+                                    "error": "failed to lock models mutex",
+                                    "context": err.to_string()
+                                }))
+                            }
+                        }
+                    }
+
+                    "/api/v1/unload" => {
+                        let Some(path) = request.get_param("model") else {
+                            return Response::json(&json!({
+                                "type": "error",
+                                "error": "model path is missing"
+                            }));
+                        };
+
+                        match models.lock() {
+                            Ok(mut models) => {
+                                models.remove(&path);
+
+                                Response::json(&json!({
+                                    "status": "success"
+                                }))
+                            }
+
+                            Err(err) => {
+                                Response::json(&json!({
+                                    "type": "error",
+                                    "error": "failed to lock models mutex",
+                                    "context": err.to_string()
+                                }))
+                            }
+                        }
+                    }
+
+                    "/api/v1/stats" => {
+                        match models.lock() {
+                            Ok(models) => {
+                                let mut stats = Vec::new();
+
+                                let now = UNIX_EPOCH.elapsed()
+                                    .unwrap_or_default();
+
+                                for (path, info) in models.iter() {
+                                    let mut experts = Vec::new();
+                                    let mut total_size = 0;
+
+                                    total_size += info.model.tokens_ref().size();
+                                    total_size += info.model.transitions_ref().size();
+
+                                    for expert in info.model.experts_ref() {
+                                        experts.push(json!({
+                                            "transitions": {
+                                                "len": expert.transitions().len(),
+                                                "size": expert.transitions().size()
+                                            }
+                                        }));
+
+                                        total_size += expert.transitions().size();
+                                    }
+
+                                    stats.push(json!({
+                                        "path": path,
+                                        "model": {
+                                            "total_size": total_size,
+                                            "tokens": {
+                                                "len": info.model.tokens_ref().len(),
+                                                "size": info.model.tokens_ref().size()
+                                            },
+                                            "base": {
+                                                "transitions": {
+                                                    "len": info.model.transitions_ref().len(),
+                                                    "size": info.model.transitions_ref().size()
+                                                }
+                                            },
+                                            "experts": experts,
+                                            "metadata": info.model.keys_ref()
+                                        },
+                                        "stats": {
+                                            "time": {
+                                                "server_time": now.as_secs(),
+                                                "loaded_time": info.loaded_timestamp,
+                                                "running_time": info.loaded_at.elapsed().as_secs()
+                                            },
+                                            "requests": {
+                                                "count": info.requests_count
+                                            }
+                                        }
+                                    }));
+                                }
+
+                                Response::json(&json!({
+                                    "status": "success",
+                                    "stats": stats
+                                }))
+                            }
+
+                            Err(err) => {
+                                Response::json(&json!({
+                                    "type": "error",
+                                    "error": "failed to lock models mutex",
+                                    "context": err.to_string()
+                                }))
+                            }
+                        }
+                    }
+
+                    "/api/v1/generate" => {
+                        let Some(path) = request.get_param("model") else {
+                            return Response::json(&json!({
+                                "type": "error",
+                                "error": "model path is missing"
+                            }));
+                        };
+
+                        let Some(query) = request.get_param("query") else {
+                            return Response::json(&json!({
+                                "type": "error",
+                                "error": "query is missing"
+                            }));
+                        };
+
+                        match models.lock() {
+                            Ok(mut models) => {
+                                let Some(model) = models.get_mut(&path) else {
+                                    return Response::json(&json!({
+                                        "type": "error",
+                                        "error": "model is not loaded",
+                                        "path": &path
+                                    }));
+                                };
+
+                                model.requests_count += 1;
+
+                                let Ok(tokenizer) = model.model.get_tokenizer() else {
+                                    return Response::json(&json!({
+                                        "type": "error",
+                                        "error": "failed to load model tokenizer",
+                                        "path": &path
+                                    }));
+                                };
+
+                                #[allow(irrefutable_let_patterns)]
+                                let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = tokenizer else {
+                                    return Response::json(&json!({
+                                        "type": "error",
+                                        "error": "failed to load model tokenizer: only word-tokenizer is currently supported",
+                                        "path": &path
+                                    }));
+                                };
+
+                                let tokenizer = WordTokenizer { lowercase, punctuation };
+
+                                let mut rand = rand();
+
+                                let generator = match model.model.generate_tokens(query.trim(), &mut rand) {
+                                    Ok(generator) => generator,
+                                    Err(err) => {
+                                        return Response::json(&json!({
+                                            "type": "error",
+                                            "error": "failed to load tokens generator",
+                                            "context": err.to_string(),
+                                            "path": &path,
+                                            "query": &query
+                                        }));
+                                    }
+                                };
+
+                                let mut decoder = tokenizer.decode(generator);
+                                let mut response = String::new();
+
+                                if let Err(err) = decoder.read_to_string(&mut response) {
+                                    return Response::json(&json!({
+                                        "type": "error",
+                                        "error": "failed to generate response",
+                                        "context": err.to_string(),
+                                        "path": &path,
+                                        "query": &query
+                                    }));
+                                }
+
+                                Response::json(&json!({
+                                    "status": "success",
+                                    "response": response
+                                }))
+                            }
+
+                            Err(err) => {
+                                Response::json(&json!({
+                                    "type": "error",
+                                    "error": "failed to lock models mutex",
+                                    "context": err.to_string()
+                                }))
+                            }
+                        }
+                    }
+
+                    _ => Response::empty_404()
+                }
+            })
+        }
+
         Some("help") | None => {
             println!("capacitor help - show this help message");
             println!("capacitor new <recipe path> - save new example model file");
             println!("capacitor build <recipe path> - build the model");
-            println!("capacitor run <model path> - open model inference interface");
+            println!("capacitor run <model path> [--verbose] - open model inference interface");
             println!("capacitor show <model path> - show model info");
             println!("capacitor set <model path> <key> <value> - set metadata key value to the model");
             println!("capacitor export-tokens <model path> - export tokens csv table to stdout");
             println!("capacitor export-transitions <model path> - export base model transitions csv table to stdout");
+
+            #[cfg(feature = "http-api")]
+            println!("capacitor serve <address> - start HTTP REST API");
         }
 
         Some(command) => anyhow::bail!("unknown command: {command}")

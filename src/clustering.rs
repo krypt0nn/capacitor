@@ -133,7 +133,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
 
         for document in documents {
             for token in document.iter() {
-                *subset_frequencies.entry(token).or_default() += documents_frequencies.get(document.as_ref())
+                *subset_frequencies.entry(token).or_default() += documents_frequencies.get(document)
                     .and_then(|freq| freq.get(&token))
                     .copied()
                     .unwrap_or_default() / documents_len as f32;
@@ -200,7 +200,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
             let mut cummulative_similarity = 1.0;
 
             for j in 0..i {
-                cummulative_similarity *= clusters_similarities[j].get(document.as_ref())
+                cummulative_similarity *= clusters_similarities[j].get(document)
                     .copied()
                     .unwrap_or(1.0);
             }
