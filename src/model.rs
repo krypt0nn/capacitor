@@ -451,6 +451,20 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         recipe.keys.entry(String::from("model.experts.centroids"))
             .or_insert(recipe.centroids.to_string());
 
+        recipe.keys.entry(String::from("model.inference.template"))
+            .or_insert(recipe.template);
+
+        for (i, token) in recipe.stop_tokens.into_iter().enumerate() {
+            recipe.keys.entry(format!("model.inference.stop_tokens[{i}]"))
+                .or_insert(token);
+        }
+
+        recipe.keys.entry(String::from("model.inference.top_k"))
+            .or_insert(String::from("10"));
+
+        recipe.keys.entry(String::from("model.inference.max_tokens"))
+            .or_insert(String::from("200"));
+
         // Build the model.
 
         Ok(Self {
@@ -517,9 +531,54 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
     pub fn generate_tokens<'model, R: RngCore>(
         &'model self,
-        sequence: impl Into<Vec<T>>,
+        query: impl AsRef<str>,
         rand: &'model mut R
     ) -> anyhow::Result<TokensGenerator<'model, SIZE, T, R>> {
+        // Parse model's template, stop tokens and prefill values.
+
+        let template = self.keys.get("model.inference.template")
+            .cloned()
+            .unwrap_or_else(|| String::from("{{content}}"));
+
+        let mut stop_tokens = Vec::new();
+        let mut i = 0;
+
+        loop {
+            let Some(stop_token) = self.keys.get(&format!("model.inference.stop_tokens[{i}]")) else {
+                break;
+            };
+
+            stop_tokens.push(stop_token.clone());
+
+            i += 1;
+        }
+
+        let start_token = self.keys.get("model.tokens.start_token")
+            .cloned()
+            .unwrap_or_else(|| Self::START_TOKEN.to_string());
+
+        let stop_token = self.keys.get("model.tokens.stop_token")
+            .cloned()
+            .unwrap_or_else(|| Self::START_TOKEN.to_string());
+
+        // Format the query according to the template and encode it to tokens.
+
+        let query = template
+            .replace("{{content}}", query.as_ref())
+            .replace("{{start_token}}", &start_token)
+            .replace("{{stop_token}}", &stop_token);
+
+        let mut query = self.encode_tokens(query)?;
+
+        if query.is_empty() {
+            let start_token = self.tokens.find_token(&start_token)
+                .ok_or_else(|| anyhow::anyhow!("failed to find start token"))?;
+
+            query = Box::new([start_token]);
+        }
+
+        // Parse inference parameters.
+
         let active_experts = self.keys.get("model.experts.active")
             .map(|value| value.parse::<usize>())
             .unwrap_or(Ok(0))?;
@@ -532,17 +591,12 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             .map(|value| value.parse::<usize>())
             .unwrap_or(Ok(200))?;
 
-        let sequence: Vec<T> = sequence.into();
-
-        // if let Some(token) = self.tokens.find_token(Self::START_TOKEN) {
-        //     sequence.insert(0, token);
-        // }
-
         Ok(TokensGenerator {
             model: self,
-            sequence_ptr: sequence.len() - 1,
-            sequence,
+            sequence_ptr: query.len() - 1,
+            sequence: query.to_vec(),
             rand,
+            stop_tokens,
             active_experts,
             top_k,
             max_tokens
@@ -561,6 +615,9 @@ pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore
     sequence: Vec<T>,
     sequence_ptr: usize,
     rand: &'model mut R,
+
+    /// Tokens after which the inference must be stopped.
+    stop_tokens: Vec<String>,
 
     /// Amount of experts to use for each token generation.
     active_experts: usize,
@@ -585,7 +642,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
             let token = self.model.tokens.find_word(*token)?;
 
-            if token == Model::<SIZE, T>::STOP_TOKEN {
+            if self.stop_tokens.contains(&token) {
                 return None;
             }
 
@@ -653,7 +710,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
                 let token = self.model.tokens.find_word(to[0])?;
 
-                if token == Model::<SIZE, T>::STOP_TOKEN {
+                if self.stop_tokens.contains(&token) {
                     return None;
                 }
 
@@ -710,7 +767,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
                 let token = self.model.tokens.find_word(to[0])?;
 
-                if token == Model::<SIZE, T>::STOP_TOKEN {
+                if self.stop_tokens.contains(&token) {
                     return None;
                 }
 
@@ -723,7 +780,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
         let token = self.model.tokens.find_word(transitions[0].1[0])?;
 
-        if token == Model::<SIZE, T>::STOP_TOKEN {
+        if self.stop_tokens.contains(&token) {
             return None;
         }
 

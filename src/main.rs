@@ -34,8 +34,13 @@ fn main() -> anyhow::Result<()> {
 
     match args.next().as_deref() {
         Some("new") => {
-            let path = args.next()
-                .unwrap_or_else(|| String::from("capacitorfile"));
+            let mut path = args.next()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("capacitorfile"));
+
+            if path.is_dir() {
+                path = path.join("capacitorfile");
+            }
 
             let recipe = Recipe::default();
 
@@ -113,12 +118,11 @@ fn main() -> anyhow::Result<()> {
 
                 stdin.read_line(&mut query)?;
 
-                let query = model.encode_tokens(query.trim())?;
-                let generator = model.generate_tokens(query, &mut rand)?;
+                let generator = model.generate_tokens(query.trim(), &mut rand)?;
 
                 let mut decoder = tokenizer.decode(generator);
 
-                let mut buf = [0; 32];
+                let mut buf = [0; 16];
 
                 loop {
                     let n = decoder.read(&mut buf)?;

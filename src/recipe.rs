@@ -72,6 +72,19 @@ pub struct Recipe {
     /// Documents tokenizer.
     pub tokenizer: Tokenizer,
 
+    /// Formatting rule for the user's queries.
+    ///
+    /// - `{{query}}` - user query's content.
+    /// - `{{start_token}}` - start token.
+    /// - `{{stop_token}}` - stop token.
+    ///
+    /// By default `{{query}}` template is used.
+    pub template: String,
+
+    /// Stop words after which the inference should be killed. Stop words are
+    /// not returned to the user.
+    pub stop_tokens: Vec<String>,
+
     /// Amount of `from` tokens in transitions.
     pub from_depth: usize,
 
@@ -108,6 +121,13 @@ impl Default for Recipe {
                 lowercase: true,
                 punctuation: false
             },
+            template: String::from("{{content}}"),
+            stop_tokens: vec![
+                String::from("<|start|>"),
+                String::from("<|stop|>"),
+                String::from("<|document|>"),
+                String::from("<|answer|>")
+            ],
             from_depth: 2,
             to_depth: 1,
             total_experts: 4,
@@ -119,6 +139,10 @@ impl Default for Recipe {
 
 impl std::fmt::Display for Recipe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stop_tokens = self.stop_tokens.iter()
+            .map(|token| format!("Stop {token}"))
+            .collect::<Vec<String>>();
+
         let keys = self.keys.iter()
             .map(|(key, value)| format!("Set {key} = {value}"))
             .collect::<Vec<String>>();
@@ -136,10 +160,16 @@ impl std::fmt::Display for Recipe {
         let mut lines = vec![
             format!("Name {}", self.name),
             format!("Tokenizer {}", self.tokenizer),
+            format!("Template {}", self.template),
             format!("Depth {}/{}", self.from_depth, self.to_depth),
             format!("Experts {}/{}", self.active_experts, self.total_experts),
             format!("Centroids {}", self.centroids)
         ];
+
+        if !stop_tokens.is_empty() {
+            lines.push(String::new());
+            lines.extend(stop_tokens);
+        }
 
         if !keys.is_empty() {
             lines.push(String::new());
@@ -161,6 +191,8 @@ impl FromStr for Recipe {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut name = None;
         let mut tokenizer = None;
+        let mut template = String::from("{{content}}");
+        let mut stop_tokens = Vec::new();
         let mut keys = HashMap::new();
         let mut files = Vec::new();
         let mut from_depth = 1;
@@ -180,6 +212,14 @@ impl FromStr for Recipe {
 
             else if let Some(value) = line.strip_prefix("Tokenizer ") {
                 tokenizer = Some(Tokenizer::from_str(value.trim())?);
+            }
+
+            else if let Some(value) = line.strip_prefix("Template ") {
+                template = value.trim().to_string();
+            }
+
+            else if let Some(value) = line.strip_prefix("Stop ") {
+                stop_tokens.push(value.trim().to_string());
             }
 
             else if let Some(value) = line.strip_prefix("Set ") {
@@ -247,6 +287,8 @@ impl FromStr for Recipe {
             keys,
             files,
             tokenizer: tokenizer.ok_or_else(|| anyhow::anyhow!("missing model tokenizer"))?,
+            template,
+            stop_tokens,
             from_depth,
             to_depth,
             total_experts,
@@ -273,6 +315,10 @@ fn test_recipe() -> anyhow::Result<()> {
             lowercase: true,
             punctuation: false
         },
+        template: String::from("{{content}}"),
+        stop_tokens: vec![
+            String::from("<|document|>")
+        ],
         from_depth: 5,
         to_depth: 2,
         total_experts: 64,
