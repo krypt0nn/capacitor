@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::iter::FusedIterator;
 
 use rand_chacha::rand_core::RngCore;
+use rayon::prelude::*;
 
 use crate::rand;
 use crate::tokens::{Token, TokensMap};
@@ -266,7 +267,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Tokenize documents.
 
-        let documents = documents.into_iter()
+        let documents = documents.into_par_iter()
             .map(|document| {
                 let mut tokenized_document = Vec::new();
 
@@ -282,8 +283,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             })
             .collect::<anyhow::Result<Vec<Vec<String>>>>()?;
 
-        let words = documents.iter()
-            .flat_map(|document| document.iter())
+        let words = documents.par_iter()
+            .flat_map(|document| document.par_iter())
             .collect::<HashSet<_>>();
 
         let tokens_map = TokensMap::<SIZE, T>::from_words(words)?;
@@ -292,7 +293,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         // and hashmap is O(1).
         let tokens_table = tokens_map.as_words_table();
 
-        let documents = documents.into_iter()
+        let documents = documents.into_par_iter()
             .map(|document| {
                 document.into_iter()
                     .flat_map(|word| tokens_table.get(&word).cloned())
@@ -347,7 +348,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             .copied()
             .sum::<usize>();
 
-        let cummulative_transitions = cummulative_transitions.into_iter()
+        let cummulative_transitions = cummulative_transitions.into_par_iter()
             .map(|(transition, count)| {
                 let frequency = count as f32 / total_transitions as f32;
 
@@ -406,7 +407,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                 .copied()
                 .sum::<usize>();
 
-            let cluster_transitions = cluster_transitions.into_iter()
+            let cluster_transitions = cluster_transitions.into_par_iter()
                 .map(|(transition, count)| {
                     let frequency = count as f32 / total_transitions as f32;
 

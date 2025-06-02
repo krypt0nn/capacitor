@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::cmp::Ordering;
 
+use rayon::prelude::*;
+
 use crate::tokens::Token;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -256,6 +258,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
             })
         } else {
             (0..self.len())
+                .into_par_iter()
                 .map(|i| self.read_transition(i))
                 .filter(|transition| {
                     &transition.from[from_count - match_len..] == from

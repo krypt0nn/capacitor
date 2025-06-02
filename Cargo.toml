@@ -18,3 +18,4 @@ lto = "fat"
 [dependencies]
 anyhow = "1.0"
 rand_chacha = "0.9"
+rayon = "1.10"

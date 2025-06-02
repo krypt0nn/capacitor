@@ -5,6 +5,8 @@ pub trait Token<const SIZE: usize>:
     std::fmt::Debug +
     Clone +
     Copy +
+    Send +
+    Sync +
     PartialEq +
     Eq +
     PartialOrd +
