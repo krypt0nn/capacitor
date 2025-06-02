@@ -157,8 +157,6 @@ fn main() -> anyhow::Result<()> {
                         stdout.flush()?;
                     }
 
-                    stdout.write_all(b"\n\nExperts use:\n")?;
-
                     let stats = generator.stats();
                     let mut experts_usage = Vec::new();
 
@@ -167,18 +165,24 @@ fn main() -> anyhow::Result<()> {
                             continue;
                         };
 
-                        experts_usage.push((usage, format!("  [Expert {i:3}] {:.2}%\n", usage * 100.0)));
+                        if usage > 0.0 {
+                            experts_usage.push((usage, format!("  [Expert {i:3}] {:.2}%\n", usage * 100.0)));
+                        }
                     }
 
-                    experts_usage.sort_by(|a, b| {
-                        b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
-                    });
+                    if !experts_usage.is_empty() {
+                        experts_usage.sort_by(|a, b| {
+                            b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
+                        });
 
-                    for (_, line) in experts_usage {
-                        stdout.write_all(line.as_bytes())?;
+                        stdout.write_all(b"\n\nExperts use:\n")?;
+
+                        for (_, line) in experts_usage {
+                            stdout.write_all(line.as_bytes())?;
+                        }
+
+                        stdout.flush()?;
                     }
-
-                    stdout.flush()?;
                 }
             }
         }
