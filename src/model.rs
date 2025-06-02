@@ -578,6 +578,11 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             query = Box::new([start_token]);
         }
 
+        // Extend stop tokens with model's start and stop tokens.
+
+        stop_tokens.push(start_token);
+        stop_tokens.push(stop_token);
+
         // Parse inference parameters.
 
         let active_experts = self.keys.get("model.experts.active")
