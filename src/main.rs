@@ -122,7 +122,7 @@ fn main() -> anyhow::Result<()> {
 
                 let mut decoder = tokenizer.decode(generator);
 
-                let mut buf = [0; 16];
+                let mut buf = [0; 32];
 
                 loop {
                     let n = decoder.read(&mut buf)?;
