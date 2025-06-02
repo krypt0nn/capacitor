@@ -161,62 +161,63 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
         &documents_frequencies
     ));
 
-    // Calculate distances from the initial cluster to all the other documents.
+    // Calculate similarities from the initial cluster to all the other documents.
 
-    fn calc_distance<T: PartialEq + Eq + std::hash::Hash>(
+    fn calc_similarity<T: PartialEq + Eq + std::hash::Hash>(
         ranks: &HashMap<&T, f32>,
         document: &[T]
     ) -> f32 {
-        let mut distance = 0.0;
+        let mut similarity = 0.0;
 
         for token in document {
             if let Some(rank) = ranks.get(&token) {
-                distance += *rank;
+                similarity += *rank;
             }
         }
 
-        distance
+        similarity
     }
 
-    let mut clusters_distances = Vec::with_capacity(clusters_num);
-    let mut distances = HashMap::<&[T], f32>::with_capacity(documents.len());
+    let mut clusters_similarities = Vec::with_capacity(clusters_num);
+    let mut similarities = HashMap::<&[T], f32>::with_capacity(documents.len());
 
     for document in &clusters[0] {
-        distances.insert(document, calc_distance(&ranks[0], document));
+        similarities.insert(document, calc_similarity(&ranks[0], document));
     }
 
-    clusters_distances.push(distances);
+    clusters_similarities.push(similarities);
 
     // Populate other clusters.
 
     for i in 1..clusters_num {
-        // Calculate cummulative distance from all the existing clusters to all
-        // the documents as geometric mean of all the known distances.
+        // Calculate cummulative similarity from all the existing clusters to all
+        // the documents as geometric mean of all the known similarities.
 
-        let mut total_distance = 0.0;
-        let mut cummulative_distances = Vec::with_capacity(documents.len());
+        let mut total_similarity = 0.0;
+        let mut cummulative_similarities = Vec::with_capacity(documents.len());
 
         for document in &documents_set {
-            let mut cummulative_distance = 1.0;
+            let mut cummulative_similarity = 1.0;
 
             for j in 0..i {
-                cummulative_distance *= clusters_distances[j].get(document.as_ref())
+                cummulative_similarity *= clusters_similarities[j].get(document.as_ref())
                     .copied()
                     .unwrap_or(1.0);
             }
 
-            cummulative_distance = cummulative_distance.powf(1.0 / i as f32);
+            cummulative_similarity = 1.0 / cummulative_similarity.powf(1.0 / i as f32);
 
-            total_distance += cummulative_distance;
+            total_similarity += cummulative_similarity;
 
-            cummulative_distances.push((document, cummulative_distance));
+            cummulative_similarities.push((document, cummulative_similarity));
         }
 
-        // Sort distances in descending order. We will generate `centroids_num`
-        // random floats from 0.0 to `total_distance` and iterating over the
-        // sorted `cummulative_distances` vector choose farthest documents.
+        // Sort similarities in descending order. We will generate
+        // `centroids_num` random floats from 0.0 to `total_distance` and
+        // iterating over the sorted `cummulative_distances` vector choose
+        // farthest documents.
 
-        cummulative_distances.sort_by(|a, b| {
+        cummulative_similarities.sort_by(|a, b| {
             b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
         });
 
@@ -224,17 +225,17 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
 
         for _ in 0..centroids_num {
             let mut curr_distance = 0.0;
-            let cutoff = rand.next_u32() as f32 / u32::MAX as f32 * total_distance;
+            let cutoff = rand.next_u32() as f32 / u32::MAX as f32 * total_similarity;
 
-            for (document, distance) in &cummulative_distances {
+            for (document, similarity) in &cummulative_similarities {
                 if cluster.contains(*document) {
                     continue;
                 }
 
-                curr_distance += distance;
+                curr_distance += similarity;
 
                 if cutoff <= curr_distance {
-                    total_distance -= distance;
+                    total_similarity -= similarity;
 
                     cluster.insert(document);
 
@@ -248,11 +249,11 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
         // but presented just in case.
 
         let mut k = 0;
-        let n = cummulative_distances.len();
+        let n = cummulative_similarities.len();
 
         // i < n just in case but it shouldn't be needed here.
         while cluster.len() < centroids_num && k < n {
-            cluster.insert(cummulative_distances[k].0);
+            cluster.insert(cummulative_similarities[k].0);
 
             k += 1;
         }
@@ -278,15 +279,15 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
             &documents_frequencies
         ));
 
-        // Calculate distances for newly formed cluster.
+        // Calculate similarities for newly formed cluster.
 
-        let mut distances = HashMap::<&[T], f32>::with_capacity(documents.len());
+        let mut similarities = HashMap::<&[T], f32>::with_capacity(documents.len());
 
         for document in &clusters[i] {
-            distances.insert(document, calc_distance(&ranks[i], document));
+            similarities.insert(document, calc_similarity(&ranks[i], document));
         }
 
-        clusters_distances.push(distances);
+        clusters_similarities.push(similarities);
     }
 
     // Prepare clusters output.
