@@ -12,11 +12,14 @@ pub mod clustering;
 pub mod recipe;
 pub mod model;
 
+use tokens::QuantizedToken;
 use tokenizer::{Tokenizer, WordTokenizer};
 use recipe::{Recipe, Tokenizer as RecipeTokenizer};
-use model::Model32;
+use model::Model;
 
-type Model = Model32;
+// type QuantizedModel = Model<2, u16>;
+type QuantizedModel = Model<3, QuantizedToken<3>>;
+// type QuantizedModel = Model<4, u32>;
 
 pub fn rand() -> impl RngCore {
     let micros = std::time::UNIX_EPOCH.elapsed()
@@ -68,7 +71,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("Building the model...");
 
-            let model = Model::build(recipe)?;
+            let model = QuantizedModel::build(recipe)?;
 
             std::fs::write(&output_path, model.into_bytes())?;
 
@@ -89,7 +92,7 @@ fn main() -> anyhow::Result<()> {
             stdout.write_all(b"Loading model...")?;
             stdout.flush()?;
 
-            let model = Model::open(std::fs::read(path)?)?;
+            let model = QuantizedModel::open(std::fs::read(path)?)?;
 
             let mut rand = rand();
 
@@ -139,7 +142,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let model = Model::open(std::fs::read(path)?)?;
+            let model = QuantizedModel::open(std::fs::read(path)?)?;
 
             println!("Base model transitions: {}", model.transitions_ref().read_list().len());
 
@@ -227,7 +230,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let mut model = Model::open(std::fs::read(&path)?)?;
+            let mut model = QuantizedModel::open(std::fs::read(&path)?)?;
 
             model.keys_mut().insert(key, value);
 
@@ -245,7 +248,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let model = Model::open(std::fs::read(path)?)?;
+            let model = QuantizedModel::open(std::fs::read(path)?)?;
 
             println!("token,word");
 
@@ -263,7 +266,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let model = Model::open(std::fs::read(path)?)?;
+            let model = QuantizedModel::open(std::fs::read(path)?)?;
 
             println!("from,to,weight");
 

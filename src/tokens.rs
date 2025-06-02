@@ -156,6 +156,60 @@ impl Token<8> for u64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct QuantizedToken<const SIZE: usize>([u8; SIZE]);
+
+impl<const SIZE: usize> Token<SIZE> for QuantizedToken<SIZE> {
+    #[inline(always)]
+    fn encode(&self) -> [u8; SIZE] {
+        self.0
+    }
+
+    #[inline(always)]
+    fn decode(bytes: [u8; SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    #[inline(always)]
+    fn zero() -> Self {
+        Self([0; SIZE])
+    }
+}
+
+impl std::fmt::Display for QuantizedToken<1> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0[0])
+    }
+}
+
+impl std::fmt::Display for QuantizedToken<2> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", u16::from_le_bytes(self.0))
+    }
+}
+
+impl std::fmt::Display for QuantizedToken<3> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut bytes = [0; 4];
+
+        bytes[1..].copy_from_slice(&self.0);
+
+        write!(f, "{}", u32::from_le_bytes(bytes))
+    }
+}
+
+impl std::fmt::Display for QuantizedToken<4> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", u32::from_le_bytes(self.0))
+    }
+}
+
+impl std::fmt::Display for QuantizedToken<8> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", u64::from_le_bytes(self.0))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TokensMap<const SIZE: usize, T: Token<SIZE>> {
     map: Box<[u8]>,
