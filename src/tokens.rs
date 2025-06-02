@@ -192,7 +192,7 @@ impl std::fmt::Display for QuantizedToken<3> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut bytes = [0; 4];
 
-        bytes[1..].copy_from_slice(&self.0);
+        bytes[..3].copy_from_slice(&self.0);
 
         write!(f, "{}", u32::from_le_bytes(bytes))
     }
