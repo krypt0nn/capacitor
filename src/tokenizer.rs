@@ -65,6 +65,11 @@ impl Iterator for WordTokenizerEncoder<'_> {
         fn apply(mut word: &str, lowercase: bool, punctuation: bool) -> String {
             word = word.trim();
 
+            // Return special tags without change.
+            if word.starts_with("<|") && word.ends_with("|>") {
+                return word.to_string();
+            }
+
             if !punctuation {
                 word = word.trim_matches(|c: char| c.is_ascii_punctuation());
             }
