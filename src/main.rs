@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::io::{Read, Write};
 use std::str::FromStr;
 use std::path::PathBuf;
@@ -92,6 +93,18 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
+            let mut verbose = false;
+
+            for flag in args {
+                if ["-v", "--verbose"].contains(&flag.as_str()) {
+                    verbose = true;
+                }
+
+                else {
+                    anyhow::bail!("unknown flag: {flag}");
+                }
+            }
+
             let mut stdout = std::io::stdout();
 
             stdout.write_all(b"Loading model...")?;
@@ -118,20 +131,53 @@ fn main() -> anyhow::Result<()> {
 
                 stdin.read_line(&mut query)?;
 
-                let generator = model.generate_tokens(query.trim(), &mut rand)?;
+                let mut generator = model.generate_tokens(query.trim(), &mut rand)?;
 
-                let mut decoder = tokenizer.decode(generator);
+                if !verbose {
+                    let mut decoder = tokenizer.decode(generator);
 
-                let mut buf = [0; 32];
+                    let mut buf = [0; 32];
 
-                loop {
-                    let n = decoder.read(&mut buf)?;
+                    loop {
+                        let n = decoder.read(&mut buf)?;
 
-                    if n == 0 {
-                        break;
+                        if n == 0 {
+                            break;
+                        }
+
+                        stdout.write_all(&buf[..n])?;
+                        stdout.flush()?;
+                    }
+                }
+
+                else {
+                    for token in &mut generator {
+                        stdout.write_all(token.as_bytes())?;
+                        stdout.write_all(b" ")?;
+                        stdout.flush()?;
                     }
 
-                    stdout.write_all(&buf[..n])?;
+                    stdout.write_all(b"\nExperts use:\n")?;
+
+                    let stats = generator.stats();
+                    let mut experts_usage = Vec::new();
+
+                    for i in 0..stats.total_experts() {
+                        let Some(usage) = stats.expert_frequency(i) else {
+                            continue;
+                        };
+
+                        experts_usage.push((usage, format!("  [Expert {i:3}] {:.2}%\n", usage * 100.0)));
+                    }
+
+                    experts_usage.sort_by(|a, b| {
+                        b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
+                    });
+
+                    for (_, line) in experts_usage {
+                        stdout.write_all(line.as_bytes())?;
+                    }
+
                     stdout.flush()?;
                 }
             }
