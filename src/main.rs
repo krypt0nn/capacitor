@@ -200,10 +200,11 @@ fn main() -> anyhow::Result<()> {
 
             let model = QuantizedModel::open(std::fs::read(path)?)?;
 
+            println!("Unique tokens: {}", model.tokens_ref().len());
             println!("Base model transitions: {}", model.transitions_ref().read_list().len());
 
             for (i, expert) in model.experts_ref().iter().enumerate() {
-                println!("Expert #{} transitions: {}", i + 1, expert.transitions().len());
+                println!("Expert {i} transitions: {}", expert.transitions().len());
             }
 
             println!();
