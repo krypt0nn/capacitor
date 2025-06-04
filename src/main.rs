@@ -77,7 +77,9 @@ fn main() -> anyhow::Result<()> {
 
             println!("Building the model...");
 
-            let model = QuantizedModel::build(recipe)?;
+            let model = QuantizedModel::build(recipe, |curr, total| {
+                println!("Building experts {curr}/{total} ({:.2} %)...", curr as f32 / total as f32 * 100.0);
+            })?;
 
             std::fs::write(&output_path, model.into_bytes())?;
 
@@ -166,7 +168,7 @@ fn main() -> anyhow::Result<()> {
                         };
 
                         if usage > 0.0 {
-                            experts_usage.push((usage, format!("  [Expert {i:3}] {:.2}%\n", usage * 100.0)));
+                            experts_usage.push((usage, format!("  [Expert {i:3}] {:.2} %\n", usage * 100.0)));
                         }
                     }
 

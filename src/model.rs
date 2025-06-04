@@ -243,7 +243,10 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         model.into_boxed_slice()
     }
 
-    pub fn build(mut recipe: Recipe) -> anyhow::Result<Self> {
+    pub fn build(
+        mut recipe: Recipe,
+        mut progress: impl FnMut(usize, usize)
+    ) -> anyhow::Result<Self> {
         // Read documents from the dataset files.
 
         let mut documents = Vec::with_capacity(recipe.files.len());
@@ -388,9 +391,13 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Create experts from clusters.
 
-        let mut experts = Vec::with_capacity(clusters.len());
+        let n = clusters.len();
+
+        let mut experts = Vec::with_capacity(n);
 
         for (i, cluster) in clusters.into_iter().enumerate() {
+            progress(i, n);
+
             let mut cluster_transitions = HashMap::<&(&[T], &[T]), usize>::new();
 
             for document in &documents_clusters[i] {
@@ -421,6 +428,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                 transitions
             });
         }
+
+        progress(n, n);
 
         // Prefill default metadata keys.
 
