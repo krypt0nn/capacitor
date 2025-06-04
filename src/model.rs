@@ -372,17 +372,16 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         let mut documents_clusters = vec![Vec::new(); clusters.len()];
 
         for document in &documents {
-            let mut document_cluster = 0;
-            let mut similarity = f32::MIN;
+            let result = clusters.par_iter()
+                .enumerate()
+                .max_by(|(_, cluster_a), (_, cluster_b)| {
+                    let similarity_a = cluster_a.similarity(document.iter().copied());
+                    let similarity_b = cluster_b.similarity(document.iter().copied());
 
-            for (i, cluster) in clusters.iter().enumerate() {
-                let cluster_similarity = cluster.similarity(document.iter().copied());
+                    similarity_a.partial_cmp(&similarity_b).unwrap_or(Ordering::Equal)
+                });
 
-                if cluster_similarity > similarity {
-                    document_cluster = i;
-                    similarity = cluster_similarity;
-                }
-            }
+            let document_cluster = result.map(|(i, _)| i).unwrap_or(0);
 
             documents_clusters[document_cluster].push(document);
         }
