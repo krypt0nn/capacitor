@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::cmp::Ordering;
 
 use rand_chacha::rand_core::RngCore;
+use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct Cluster<T> {
@@ -43,7 +44,7 @@ impl<T> From<HashMap<T, f32>> for Cluster<T> {
 }
 
 #[allow(clippy::needless_range_loop)]
-pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
+pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
     mut clusters_num: usize,
     mut centroids_num: usize,
     documents: impl AsRef<[Box<[T]>]>,
@@ -193,24 +194,25 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash>(
         // Calculate cummulative similarity from all the existing clusters to all
         // the documents as geometric mean of all the known similarities.
 
-        let mut total_similarity = 0.0;
-        let mut cummulative_similarities = Vec::with_capacity(documents.len());
+        let mut cummulative_similarities = documents_set.par_iter()
+            .map(|document| {
+                let mut cummulative_similarity = 1.0;
 
-        for document in &documents_set {
-            let mut cummulative_similarity = 1.0;
+                for j in 0..i {
+                    cummulative_similarity *= clusters_similarities[j].get(document)
+                        .copied()
+                        .unwrap_or(1.0);
+                }
 
-            for j in 0..i {
-                cummulative_similarity *= clusters_similarities[j].get(document)
-                    .copied()
-                    .unwrap_or(1.0);
-            }
+                cummulative_similarity = 1.0 / cummulative_similarity.powf(1.0 / i as f32);
 
-            cummulative_similarity = 1.0 / cummulative_similarity.powf(1.0 / i as f32);
+                (document, cummulative_similarity)
+            })
+            .collect::<Vec<_>>();
 
-            total_similarity += cummulative_similarity;
-
-            cummulative_similarities.push((document, cummulative_similarity));
-        }
+        let mut total_similarity = cummulative_similarities.par_iter()
+            .map(|(_, similarity)| *similarity)
+            .sum::<f32>();
 
         // Sort similarities in descending order. We will generate
         // `centroids_num` random floats from 0.0 to `total_distance` and
