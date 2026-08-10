@@ -568,7 +568,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         let stop_token = self.keys.get("model.tokens.stop_token")
             .cloned()
-            .unwrap_or_else(|| Self::START_TOKEN.to_string());
+            .unwrap_or_else(|| Self::STOP_TOKEN.to_string());
 
         // Format the query according to the template and encode it to tokens.
 
