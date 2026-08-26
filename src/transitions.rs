@@ -17,30 +17,26 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashSet;
-use std::marker::PhantomData;
 use std::cmp::Ordering;
 
 use rayon::prelude::*;
 
-use crate::tokens::Token;
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Transition<const SIZE: usize, T: Token<SIZE>> {
-    pub from: Box<[T]>,
-    pub to: Box<[T]>,
+pub struct Transition {
+    pub from: Box<[u16]>,
+    pub to: Box<[u16]>,
     pub weight: u32
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TransitionsMap<const SIZE: usize, T: Token<SIZE>> {
+pub struct TransitionsMap {
     map: Box<[u8]>,
     from_count: usize,
     to_count: usize,
-    record_size: usize,
-    _token: PhantomData<T>
+    record_size: usize
 }
 
-impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
+impl TransitionsMap {
     pub fn open(map: impl Into<Box<[u8]>>) -> anyhow::Result<Self> {
         let map: Box<[u8]> = map.into();
 
@@ -51,7 +47,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         let from_count = map[0] as usize;
         let to_count = map[1] as usize;
 
-        let record_size = from_count * SIZE + to_count * SIZE + 4;
+        let record_size = from_count * 2 + to_count * 2 + 4;
 
         if !(map.len() - 2).is_multiple_of(record_size) {
             anyhow::bail!("invalid transitions map layout");
@@ -61,8 +57,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
             map,
             from_count,
             to_count,
-            record_size,
-            _token: PhantomData
+            record_size
         })
     }
 
@@ -72,10 +67,8 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     }
 
     pub fn from_transitions<'tokens>(
-        transitions: impl IntoIterator<Item = (&'tokens [T], &'tokens [T], u32)>
-    ) -> anyhow::Result<Self>
-    where T: 'tokens
-    {
+        transitions: impl IntoIterator<Item = (&'tokens [u16], &'tokens [u16], u32)>
+    ) -> anyhow::Result<Self> {
         let mut transitions = transitions.into_iter().collect::<Vec<_>>();
 
         if transitions.is_empty() {
@@ -100,7 +93,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
             }
         });
 
-        let record_size = SIZE * from_tokens + SIZE * to_tokens + 4;
+        let record_size = from_tokens * 2 + to_tokens * 2 + 4;
 
         let mut map = Vec::with_capacity(2 + record_size * transitions.len());
 
@@ -109,10 +102,10 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
 
         for (from, to, weight) in transitions.drain(..) {
             for token in from.iter().chain(to.iter()) {
-                map.extend_from_slice(&token.encode());
+                map.extend(token.to_le_bytes());
             }
 
-            map.extend_from_slice(&weight.to_le_bytes());
+            map.extend(weight.to_le_bytes());
         }
 
         Self::open(map)
@@ -125,7 +118,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     }
 
     /// Amount of bytes stored in the transitions map.
-    #[inline]
+    #[inline(always)]
     pub const fn size(&self) -> usize {
         self.map.len()
     }
@@ -135,34 +128,37 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         self.map.len() < 3
     }
 
-    fn read_transition(&self, idx: usize) -> Transition<SIZE, T> {
+    fn read_transition(&self, idx: usize) -> Transition {
         let offset = 2 + self.record_size * idx;
 
         let mut from_tokens = Vec::with_capacity(self.from_count);
         let mut to_tokens = Vec::with_capacity(self.to_count);
 
-        let mut token = [0; SIZE];
         let mut i = 0;
 
         while i < self.from_count {
-            token.copy_from_slice(&self.map[offset + SIZE * i..offset + SIZE * (i + 1)]);
+            let token = u16::from_le_bytes([
+                self.map[offset + i * 2], self.map[offset + (i + 1) * 2]
+            ]);
 
-            from_tokens.push(T::decode(token));
+            from_tokens.push(token);
 
             i += 1;
         }
 
         while i < self.from_count + self.to_count {
-            token.copy_from_slice(&self.map[offset + SIZE * i..offset + SIZE * (i + 1)]);
+            let token = u16::from_le_bytes([
+                self.map[offset + i * 2], self.map[offset + (i + 1) * 2]
+            ]);
 
-            to_tokens.push(T::decode(token));
+            to_tokens.push(token);
 
             i += 1;
         }
 
         let weight = u32::from_le_bytes([
-            self.map[offset + SIZE * i    ], self.map[offset + SIZE * i + 1],
-            self.map[offset + SIZE * i + 2], self.map[offset + SIZE * i + 3]
+            self.map[offset + i * 2    ], self.map[offset + i * 2 + 1],
+            self.map[offset + i * 2 + 2], self.map[offset + i * 2 + 3]
         ]);
 
         Transition {
@@ -173,7 +169,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     }
 
     /// Read all the transitions from the map and return a list of them.
-    pub fn read_list(&self) -> Box<[Transition<SIZE, T>]> {
+    pub fn read_list(&self) -> Box<[Transition]> {
         (0..self.len()).map(|i| self.read_transition(i)).collect()
     }
 
@@ -184,8 +180,8 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     /// numbers 2, 3 from sequence 1, 2, 3, 4, 5.
     pub fn binary_search(
         &self,
-        mut comparator: impl FnMut(&Transition<SIZE, T>) -> Ordering
-    ) -> HashSet<Transition<SIZE, T>> {
+        mut comparator: impl FnMut(&Transition) -> Ordering
+    ) -> HashSet<Transition> {
         let mut matched = HashSet::new();
 
         let mut left_idx = 0;
@@ -262,7 +258,10 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     ///
     /// The provided suffix can be shorter than what is stored in the map, and
     /// will be truncated if it's longer than needed.
-    pub fn find_transitions(&self, from: impl AsRef<[T]>) -> HashSet<Transition<SIZE, T>> {
+    pub fn find_transitions(
+        &self,
+        from: impl AsRef<[u16]>
+    ) -> HashSet<Transition> {
         let from_count = self.from_count;
         let from = from.as_ref();
 
@@ -286,14 +285,9 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
     }
 }
 
-pub type TransitionsMap8 = TransitionsMap<1, u8>;
-pub type TransitionsMap16 = TransitionsMap<2, u16>;
-pub type TransitionsMap32 = TransitionsMap<4, u32>;
-pub type TransitionsMap64 = TransitionsMap<8, u64>;
-
 #[test]
 fn test_transitions_map() -> anyhow::Result<()> {
-    let transitions = TransitionsMap16::from_transitions([
+    let transitions = TransitionsMap::from_transitions([
         ([1, 2].as_slice(), [3, 4].as_slice(), u32::MAX / 3),
         ([2, 3].as_slice(), [4, 5].as_slice(), u32::MAX / 3),
         ([3, 4].as_slice(), [5, 1].as_slice(), u32::MAX / 3)
@@ -301,7 +295,7 @@ fn test_transitions_map() -> anyhow::Result<()> {
 
     let list = transitions.read_list();
 
-    let transitions = TransitionsMap16::open(transitions.into_inner())?;
+    let transitions = TransitionsMap::open(transitions.into_inner())?;
 
     assert_eq!(&transitions.read_list(), &list);
 
@@ -334,7 +328,7 @@ fn test_transitions_map() -> anyhow::Result<()> {
     assert_eq!(transitions.find_transitions([4]), HashSet::from_iter([list[2].clone()]));
     assert_eq!(transitions.find_transitions([3, 4]), HashSet::from_iter([list[2].clone()]));
 
-    let transitions = TransitionsMap16::from_transitions([
+    let transitions = TransitionsMap::from_transitions([
         ([1, 0].as_slice(), [1].as_slice(), u32::MAX / 5),
         ([2, 0].as_slice(), [2].as_slice(), u32::MAX / 5),
         ([3, 1].as_slice(), [3].as_slice(), u32::MAX / 5),

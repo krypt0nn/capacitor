@@ -23,15 +23,10 @@ use std::iter::FusedIterator;
 use rand_chacha::rand_core::Rng;
 use rayon::prelude::*;
 
-use crate::tokens::{Token, TokensMap};
+use crate::tokens::TokensMap;
 use crate::transitions::{Transition, TransitionsMap};
 use crate::clustering::{Cluster, clusterize};
 use crate::recipe::Recipe;
-
-pub type Model8 = Model<1, u8>;
-pub type Model16 = Model<2, u16>;
-pub type Model32 = Model<4, u32>;
-pub type Model64 = Model<8, u64>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildProgress {
@@ -85,45 +80,45 @@ pub enum BuildProgress {
 }
 
 #[derive(Debug, Clone)]
-pub struct Expert<const SIZE: usize, T: Token<SIZE>> {
-    cluster: Cluster<T>,
-    transitions: TransitionsMap<SIZE, T>
+pub struct Expert {
+    cluster: Cluster<u16>,
+    transitions: TransitionsMap
 }
 
-impl<const SIZE: usize, T: Token<SIZE>> Expert<SIZE, T> {
+impl Expert {
     #[inline(always)]
-    pub const fn cluster(&self) -> &Cluster<T> {
+    pub const fn cluster(&self) -> &Cluster<u16> {
         &self.cluster
     }
 
     #[inline(always)]
-    pub const fn transitions(&self) -> &TransitionsMap<SIZE, T> {
+    pub const fn transitions(&self) -> &TransitionsMap {
         &self.transitions
     }
 
     #[inline]
-    pub fn similarity(&self, document: impl IntoIterator<Item = T>) -> f32 {
+    pub fn similarity(&self, document: impl IntoIterator<Item = u16>) -> f32 {
         self.cluster.similarity(document)
     }
 
     #[inline]
     pub fn find_transitions(
         &self,
-        from: impl AsRef<[T]>
-    ) -> HashSet<Transition<SIZE, T>> {
+        from: impl AsRef<[u16]>
+    ) -> HashSet<Transition> {
         self.transitions.find_transitions(from)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Model<const SIZE: usize, T: Token<SIZE>> {
+pub struct Model {
     keys: HashMap<String, String>,
-    tokens: TokensMap<SIZE, T>,
-    transitions: TransitionsMap<SIZE, T>,
-    experts: Box<[Expert<SIZE, T>]>
+    tokens: TokensMap,
+    transitions: TransitionsMap,
+    experts: Box<[Expert]>
 }
 
-impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
+impl Model {
     pub const START_TOKEN: &str = "<|start|>";
     pub const STOP_TOKEN: &str = "<|stop|>";
 
@@ -180,7 +175,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         offset += 8;
 
-        let tokens_map = TokensMap::<SIZE, T>::open(&model[offset..offset + tokens_map_len]);
+        let tokens_map = TokensMap::open(&model[offset..offset + tokens_map_len]);
 
         offset += tokens_map_len;
 
@@ -193,7 +188,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         offset += 8;
 
-        let transitions_map = TransitionsMap::<SIZE, T>::open(&model[offset..offset + transitions_map_len])?;
+        let transitions_map = TransitionsMap::open(&model[offset..offset + transitions_map_len])?;
 
         offset += transitions_map_len;
 
@@ -224,24 +219,28 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             // Read expert cluster centroids.
 
-            let mut cluster = HashMap::<T, f32>::with_capacity(cluster_len);
-            let mut token = [0; SIZE];
+            let mut cluster = HashMap::<u16, f32>::with_capacity(cluster_len);
             let mut frequency = [0; 4];
             let mut j = 0;
 
             while j < cluster_len {
-                token.copy_from_slice(&model[offset..offset + SIZE]);
-                frequency.copy_from_slice(&model[offset + SIZE..offset + SIZE + 4]);
+                let token = u16::from_le_bytes([
+                    model[offset], model[offset + 1]
+                ]);
 
-                cluster.insert(T::decode(token), f32::from_le_bytes(frequency));
+                frequency.copy_from_slice(&model[offset + 2..offset + 6]);
 
-                offset += SIZE + 4;
+                cluster.insert(token, f32::from_le_bytes(frequency));
+
+                offset += 6;
                 j += 1;
             }
 
             // Read expert transitions matrix and store it.
 
-            let transitions = TransitionsMap::<SIZE, T>::open(&model[offset..offset + transitions_map_len])?;
+            let transitions = TransitionsMap::open(
+                &model[offset..offset + transitions_map_len]
+            )?;
 
             offset += transitions_map_len;
 
@@ -307,7 +306,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             model.extend((transitions.len() as u64).to_le_bytes());
 
             for (token, rank) in cluster {
-                model.extend(token.encode());
+                model.extend(token.to_le_bytes());
                 model.extend(rank.to_le_bytes());
             }
 
@@ -662,7 +661,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         progress(BuildProgress::BuildTokensMap);
 
-        let tokens_map = TokensMap::<SIZE, T>::from_words(vocab.iter())?;
+        let tokens_map = TokensMap::from_words(vocab.iter())?;
 
         let words_table = tokens_map.as_words_table();
 
@@ -715,7 +714,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
                 tokenized_document.into_boxed_slice()
             })
-            .collect::<Box<[Box<[T]>]>>();
+            .collect::<Box<[Box<[u16]>]>>();
 
         // Count transitions for every document.
 
@@ -729,7 +728,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                     return None;
                 }
 
-                let mut document_transitions = HashMap::<(&[T], &[T]), usize>::new();
+                let mut document_transitions = HashMap::<(&[u16], &[u16]), usize>::new();
 
                 let doc_len = document.len() - min_len;
                 let mut i = 0;
@@ -748,11 +747,11 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
                 Some((document.as_ref(), document_transitions))
             })
-            .collect::<HashMap<&[T], HashMap<(&[T], &[T]), usize>>>();
+            .collect::<HashMap<&[u16], HashMap<(&[u16], &[u16]), usize>>>();
 
         // Create transitions map for the whole dataset.
 
-        let mut cummulative_transitions = HashMap::<&(&[T], &[T]), usize>::new();
+        let mut cummulative_transitions = HashMap::<&(&[u16], &[u16]), usize>::new();
 
         for document_transitions in transitions.values() {
             for (transition, count) in document_transitions.iter() {
@@ -773,7 +772,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             })
             .collect::<Vec<_>>();
 
-        let transitions_map = TransitionsMap::<SIZE, T>::from_transitions(
+        let transitions_map = TransitionsMap::from_transitions(
             cummulative_transitions
         )?;
 
@@ -817,7 +816,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             experts = clusters.into_par_iter()
                 .enumerate()
                 .map(|(i, cluster)| {
-                    let mut cluster_transitions = HashMap::<&(&[T], &[T]), usize>::new();
+                    let mut cluster_transitions = HashMap::<&(&[u16], &[u16]), usize>::new();
 
                     for document in &documents_clusters[i] {
                         if let Some(document_transitions) = transitions.get(document.as_ref()) {
@@ -846,7 +845,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                         })
                         .collect::<Vec<_>>();
 
-                    let transitions = TransitionsMap::<SIZE, T>::from_transitions(
+                    let transitions = TransitionsMap::from_transitions(
                         cluster_transitions
                     )?;
 
@@ -865,10 +864,10 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                         transitions
                     }))
                 })
-                .collect::<anyhow::Result<Vec<Option<Expert<SIZE, T>>>>>()?
+                .collect::<anyhow::Result<Vec<Option<Expert>>>>()?
                 .into_iter()
                 .flatten()
-                .collect::<Vec<Expert<SIZE, T>>>();
+                .collect::<Vec<Expert>>();
         }
 
         // Prefill default metadata keys.
@@ -943,17 +942,17 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
     }
 
     #[inline(always)]
-    pub const fn tokens_ref(&self) -> &TokensMap<SIZE, T> {
+    pub const fn tokens_ref(&self) -> &TokensMap {
         &self.tokens
     }
 
     #[inline(always)]
-    pub const fn transitions_ref(&self) -> &TransitionsMap<SIZE, T> {
+    pub const fn transitions_ref(&self) -> &TransitionsMap {
         &self.transitions
     }
 
     #[inline(always)]
-    pub const fn experts_ref(&self) -> &[Expert<SIZE, T>] {
+    pub const fn experts_ref(&self) -> &[Expert] {
         &self.experts
     }
 
@@ -962,7 +961,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
     pub fn tokenize(
         &self,
         text: impl AsRef<str>
-    ) -> Box<[T]> {
+    ) -> Box<[u16]> {
         // Look if we need to convert input text to lowercase.
         let make_lowercase = self.keys.get("model.tokenizer.make_lowercase")
             .map(|value| value.as_str())
@@ -1019,7 +1018,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         &'model self,
         content: impl AsRef<str>,
         rng: &'model mut R
-    ) -> anyhow::Result<TokensGenerator<'model, SIZE, T, R>> {
+    ) -> anyhow::Result<TokensGenerator<'model, R>> {
         // Parse model's template, stop tokens and prefill values.
 
         let template = self.keys.get("model.inference.template")
@@ -1121,9 +1120,9 @@ impl TokensGeneratorStats {
 }
 
 #[derive(Debug)]
-pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: Rng> {
-    model: &'model Model<SIZE, T>,
-    sequence: Vec<T>,
+pub struct TokensGenerator<'model, R: Rng> {
+    model: &'model Model,
+    sequence: Vec<u16>,
     sequence_ptr: usize,
     rng: &'model mut R,
 
@@ -1142,14 +1141,14 @@ pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: Rng> {
     max_tokens: usize
 }
 
-impl<const SIZE: usize, T: Token<SIZE>, R: Rng> TokensGenerator<'_, SIZE, T, R> {
+impl<R: Rng> TokensGenerator<'_, R> {
     #[inline(always)]
     pub const fn stats(&self) -> &TokensGeneratorStats {
         &self.stats
     }
 }
 
-impl<const SIZE: usize, T: Token<SIZE>, R: Rng> Iterator for TokensGenerator<'_, SIZE, T, R> {
+impl<R: Rng> Iterator for TokensGenerator<'_, R> {
     type Item = Box<[u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1259,7 +1258,9 @@ impl<const SIZE: usize, T: Token<SIZE>, R: Rng> Iterator for TokensGenerator<'_,
             })
             .collect::<Vec<_>>();
 
-        let mut transitions = HashMap::<(Box<[T]>, Box<[T]>), f64>::with_capacity(raw_transitions.len());
+        let mut transitions = HashMap::<(Box<[u16]>, Box<[u16]>), f64>::with_capacity(
+            raw_transitions.len()
+        );
 
         for (from, to, weight) in raw_transitions {
             *transitions.entry((from, to)).or_default() += weight;
@@ -1319,4 +1320,4 @@ impl<const SIZE: usize, T: Token<SIZE>, R: Rng> Iterator for TokensGenerator<'_,
     }
 }
 
-impl<const SIZE: usize, T: Token<SIZE>, R: Rng> FusedIterator for TokensGenerator<'_, SIZE, T, R> {}
+impl<R: Rng> FusedIterator for TokensGenerator<'_, R> {}

@@ -30,13 +30,8 @@ pub mod clustering;
 pub mod recipe;
 pub mod model;
 
-// use tokens::QuantizedToken;
 use recipe::Recipe;
 use model::{BuildProgress, Model};
-
-type QuantizedModel = Model<2, u16>;
-// type QuantizedModel = Model<3, QuantizedToken<3>>;
-// type QuantizedModel = Model<4, u32>;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -102,7 +97,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("Building the model...");
 
-            let model = QuantizedModel::build(recipe, &mut get_rng(), |progress| {
+            let model = Model::build(recipe, &mut get_rng(), |progress| {
                 match progress {
                     BuildProgress::ReadFiles { current, total } => {
                         println!(
@@ -187,7 +182,7 @@ fn main() -> anyhow::Result<()> {
             stdout.write_all(b"Loading model...")?;
             stdout.flush()?;
 
-            let model = QuantizedModel::open(std::fs::read(path)?)?;
+            let model = Model::open(std::fs::read(path)?)?;
 
             let stdin = std::io::stdin();
 
@@ -205,14 +200,14 @@ fn main() -> anyhow::Result<()> {
 
                 if !verbose {
                     for token in generator {
-                        stdout.write_all(&token)?;
+                        stdout.write_all(token.as_ref())?;
                         stdout.flush()?;
                     }
                 }
 
                 else {
                     for token in &mut generator {
-                        stdout.write_all(&token)?;
+                        stdout.write_all(token.as_ref())?;
                         stdout.write_all(b" ")?;
                         stdout.flush()?;
                     }
@@ -256,7 +251,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let model = QuantizedModel::open(std::fs::read(path)?)?;
+            let model = Model::open(std::fs::read(path)?)?;
 
             println!("Unique tokens: {}", model.tokens_ref().len());
             println!("Base model transitions: {}", model.transitions_ref().read_list().len());
@@ -344,7 +339,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let mut model = QuantizedModel::open(std::fs::read(&path)?)?;
+            let mut model = Model::open(std::fs::read(&path)?)?;
 
             model.keys_mut().insert(key, value);
 
@@ -362,12 +357,12 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let model = QuantizedModel::open(std::fs::read(path)?)?;
+            let model = Model::open(std::fs::read(path)?)?;
 
             println!("token,word");
 
             for (token, word) in model.tokens_ref().as_tokens_table() {
-                let word = String::from_utf8_lossy(&word);
+                let word = String::from_utf8_lossy(word.as_ref());
 
                 println!("{token},\"{}\"", word.replace('"', "\\\""));
             }
@@ -382,7 +377,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("invalid model file path");
             }
 
-            let model = QuantizedModel::open(std::fs::read(path)?)?;
+            let model = Model::open(std::fs::read(path)?)?;
 
             println!("from,to,weight");
 
