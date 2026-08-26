@@ -30,12 +30,12 @@ pub mod clustering;
 pub mod recipe;
 pub mod model;
 
-use tokens::QuantizedToken;
+// use tokens::QuantizedToken;
 use recipe::Recipe;
 use model::{BuildProgress, Model};
 
-// type QuantizedModel = Model<2, u16>;
-type QuantizedModel = Model<3, QuantizedToken<3>>;
+type QuantizedModel = Model<2, u16>;
+// type QuantizedModel = Model<3, QuantizedToken<3>>;
 // type QuantizedModel = Model<4, u32>;
 
 #[cfg(feature = "mimalloc")]

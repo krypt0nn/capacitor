@@ -320,7 +320,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
     pub fn build(
         mut recipe: Recipe,
         rng: &mut impl Rng,
-        mut progress: impl FnMut(BuildProgress)
+        progress: impl Fn(BuildProgress) + Send + Sync
     ) -> anyhow::Result<Self> {
         // Read documents from the dataset files.
 
@@ -785,40 +785,25 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             progress(BuildProgress::ClusterizeDatasets);
 
-            let clusters = clusterize(
+            let (clusters, document_assignment) = clusterize(
                 recipe.total_experts,
                 recipe.centroids,
                 &documents,
                 rng
             )?;
 
-            // Assign each document to the closest cluster.
-
-            let document_clusters = documents.par_iter()
-                .map(|document| {
-                    let mut best_cluster = 0;
-                    let mut best_similarity = f32::NEG_INFINITY;
-
-                    for (i, cluster) in clusters.iter().enumerate() {
-                        let similarity = cluster.similarity(document.iter().copied());
-
-                        if similarity > best_similarity {
-                            best_similarity = similarity;
-                            best_cluster = i;
-                        }
-                    }
-
-                    best_cluster
-                })
-                .collect::<Vec<usize>>();
+            // Documents were already assigned to their most similar cluster
+            // during clusterization.
 
             let mut documents_clusters = vec![Vec::new(); clusters.len()];
 
-            for (document, document_cluster) in documents.iter().zip(document_clusters) {
+            for (document, document_cluster) in documents.iter()
+                .zip(document_assignment.into_vec())
+            {
                 documents_clusters[document_cluster].push(document);
             }
 
-            // Create experts from clusters.
+            // Create experts from clusters in parallel, preserving their order.
 
             let n = clusters.len();
 
@@ -827,48 +812,63 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                 total: n
             });
 
-            for (i, cluster) in clusters.into_iter().enumerate() {
-                let mut cluster_transitions = HashMap::<&(&[T], &[T]), usize>::new();
+            let built_experts = std::sync::atomic::AtomicUsize::new(0);
 
-                for document in &documents_clusters[i] {
-                    if let Some(document_transitions) = transitions.get(document.as_ref()) {
-                        for (transition, count) in document_transitions.iter() {
-                            *cluster_transitions.entry(transition)
-                                .or_default() += *count;
+            experts = clusters.into_par_iter()
+                .enumerate()
+                .map(|(i, cluster)| {
+                    let mut cluster_transitions = HashMap::<&(&[T], &[T]), usize>::new();
+
+                    for document in &documents_clusters[i] {
+                        if let Some(document_transitions) = transitions.get(document.as_ref()) {
+                            for (transition, count) in document_transitions.iter() {
+                                *cluster_transitions.entry(transition)
+                                    .or_default() += *count;
+                            }
                         }
                     }
-                }
 
-                let total_transitions = cluster_transitions.values()
-                    .copied()
-                    .sum::<usize>();
+                    let total_transitions = cluster_transitions.values()
+                        .copied()
+                        .sum::<usize>();
 
-                // A cluster can contain only documents which are too short
-                // to produce any transition.
-                if total_transitions == 0 {
-                    continue;
-                }
+                    // A cluster can contain only documents which are too short
+                    // to produce any transition.
+                    if total_transitions == 0 {
+                        return Ok(None);
+                    }
 
-                let cluster_transitions = cluster_transitions.into_par_iter()
-                    .map(|(transition, count)| {
-                        let frequency = count as f32 / total_transitions as f32;
+                    let cluster_transitions = cluster_transitions.into_par_iter()
+                        .map(|(transition, count)| {
+                            let frequency = count as f32 / total_transitions as f32;
 
-                        (transition.0, transition.1, (frequency * u32::MAX as f32) as u32)
-                    })
-                    .collect::<Vec<_>>();
+                            (transition.0, transition.1, (frequency * u32::MAX as f32) as u32)
+                        })
+                        .collect::<Vec<_>>();
 
-                let transitions = TransitionsMap::<SIZE, T>::from_transitions(cluster_transitions)?;
+                    let transitions = TransitionsMap::<SIZE, T>::from_transitions(
+                        cluster_transitions
+                    )?;
 
-                experts.push(Expert {
-                    cluster,
-                    transitions
-                });
+                    let current = built_experts.fetch_add(
+                        1,
+                        std::sync::atomic::Ordering::Relaxed
+                    );
 
-                progress(BuildProgress::BuildExperts {
-                    current: i + 1,
-                    total: n
-                });
-            }
+                    progress(BuildProgress::BuildExperts {
+                        current: current + 1,
+                        total: n
+                    });
+
+                    Ok(Some(Expert {
+                        cluster,
+                        transitions
+                    }))
+                })
+                .collect::<anyhow::Result<Vec<Option<Expert<SIZE, T>>>>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<Expert<SIZE, T>>>();
         }
 
         // Prefill default metadata keys.

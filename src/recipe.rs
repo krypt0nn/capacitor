@@ -388,6 +388,11 @@ impl FromStr for Recipe {
             }
         }
 
+        // Validate recipe params.
+        if tokenizer.num_tokens > u16::MAX as usize {
+            anyhow::bail!("BPE tokenizer cannot have more than 65535 tokens");
+        }
+
         Ok(Self {
             keys,
             files,
