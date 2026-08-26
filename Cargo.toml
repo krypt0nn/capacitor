@@ -1,6 +1,6 @@
 [package]
 name = "capacitor"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Nikita Podvirnyi <krypt0nn@vk.ru>"]
 homepage = "https://github.com/krypt0nn/capacitor"
 repository = "https://github.com/krypt0nn/capacitor"
