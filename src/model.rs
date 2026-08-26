@@ -319,6 +319,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
     pub fn build(
         mut recipe: Recipe,
+        rng: &mut impl Rng,
         mut progress: impl FnMut(BuildProgress)
     ) -> anyhow::Result<Self> {
         // Read documents from the dataset files.
@@ -331,15 +332,33 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         });
 
         for (i, file) in recipe.files.iter().enumerate() {
+            // Read documents from the dataset file.
             let dataset = std::fs::read_to_string(&file.path)?;
 
-            for document in dataset.split(&file.delimiter) {
-                documents.push(format!(
-                    "{}{document}{}",
-                    Self::START_TOKEN,
-                    Self::STOP_TOKEN
-                ));
+            let mut dataset_documents = dataset.split(&file.delimiter)
+                .map(|document| {
+                    format!(
+                        "{}{document}{}",
+                        Self::START_TOKEN,
+                        Self::STOP_TOKEN
+                    )
+                })
+                .collect::<Vec<String>>();
+
+            // Shuffle documents.
+            if file.shuffle {
+                let n = documents.len();
+
+                for _ in 0..n {
+                    let document = dataset_documents.swap_remove(
+                        (rng.next_u64() % n as u64) as usize
+                    );
+
+                    dataset_documents.push(document);
+                }
             }
+
+            documents.extend(dataset_documents);
 
             progress(BuildProgress::ReadFiles {
                 current: i + 1,
@@ -678,7 +697,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                 recipe.total_experts,
                 recipe.centroids,
                 &documents,
-                &mut crate::get_rng()
+                rng
             )?;
 
             // Assign each document to the closest cluster.

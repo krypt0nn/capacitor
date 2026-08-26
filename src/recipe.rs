@@ -52,7 +52,10 @@ pub struct File {
     pub path: PathBuf,
 
     /// Documents delimiter.
-    pub delimiter: String
+    pub delimiter: String,
+
+    /// Shuffle documents within the file.
+    pub shuffle: bool
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -167,10 +170,11 @@ impl std::fmt::Display for Recipe {
 
         let files = self.files.iter()
             .map(|file| {
-                if file.delimiter.is_empty() {
-                    format!("File {}", file.path.display())
-                } else {
-                    format!("Split {} File {}", file.delimiter, file.path.display())
+                match (file.delimiter.is_empty(), file.shuffle) {
+                    (true,  false) => format!("File {}", file.path.display()),
+                    (true,  true)  => format!("Shuffle File {}", file.path.display()),
+                    (false, false) => format!("Split {} File {}", file.delimiter, file.path.display()),
+                    (false, true)  => format!("Split {} Shuffle File {}", file.delimiter, file.path.display())
                 }
             })
             .collect::<Vec<String>>();
@@ -314,19 +318,39 @@ impl FromStr for Recipe {
             else if let Some(value) = line.strip_prefix("File ") {
                 files.push(File {
                     path: PathBuf::from(value.trim()),
-                    delimiter: String::from("<|document|>")
+                    delimiter: String::from("<|document|>"),
+                    shuffle: false
+                });
+            }
+
+            else if let Some(value) = line.strip_prefix("Shuffle File ") {
+                files.push(File {
+                    path: PathBuf::from(value.trim()),
+                    delimiter: String::from("<|document|>"),
+                    shuffle: true
                 });
             }
 
             else if let Some(value) = line.strip_prefix("Split ") {
-                let Some((delimiter, path)) = value.split_once(" File ") else {
-                    anyhow::bail!("invalid split file parameter: {line}");
-                };
+                if let Some((delimiter, path)) = value.split_once(" File ") {
+                    files.push(File {
+                        path: PathBuf::from(path.trim()),
+                        delimiter: delimiter.trim().to_string(),
+                        shuffle: false
+                    });
+                }
 
-                files.push(File {
-                    path: PathBuf::from(path.trim()),
-                    delimiter: delimiter.trim().to_string()
-                });
+                else if let Some((delimiter, path)) = value.split_once(" Shuffle File ") {
+                    files.push(File {
+                        path: PathBuf::from(path.trim()),
+                        delimiter: delimiter.trim().to_string(),
+                        shuffle: true
+                    });
+                }
+
+                else {
+                    anyhow::bail!("invalid split file parameter: {line}");
+                }
             }
 
             else if let Some(value) = line.strip_prefix("Depth ") {
@@ -387,7 +411,8 @@ fn test_recipe() -> anyhow::Result<()> {
         files: vec![
             File {
                 path: PathBuf::from("test"),
-                delimiter: String::from("</test>")
+                delimiter: String::from("</test>"),
+                shuffle: true
             }
         ],
         tokenizer: Tokenizer {

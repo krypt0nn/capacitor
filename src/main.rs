@@ -102,7 +102,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("Building the model...");
 
-            let model = QuantizedModel::build(recipe, |progress| {
+            let model = QuantizedModel::build(recipe, &mut get_rng(), |progress| {
                 match progress {
                     BuildProgress::ReadFiles { current, total } => {
                         println!(
