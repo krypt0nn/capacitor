@@ -347,7 +347,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             // Shuffle documents.
             if file.shuffle {
-                let n = documents.len();
+                let n = dataset_documents.len();
 
                 for _ in 0..n {
                     let document = dataset_documents.swap_remove(
