@@ -575,7 +575,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         while vocab.len() < recipe.tokenizer.num_tokens {
             // Take the most frequent pair.
 
-            let Some((&best_pair, _)) = pair_frequencies.iter()
+            let Some((&best_pair, _)) = pair_frequencies.par_iter()
                 .max_by_key(|(_, frequency)| **frequency)
             else {
                 // Stop learning if no more token pairs available.
@@ -586,8 +586,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             new_token.push_str(&vocab[best_pair.1 as usize]);
 
-            // ponytail: merging may produce an already known word - drop the
-            // pair instead of learning a duplicate token.
+            // Merging may produce an already known word.
             if alphabet.contains_key(new_token.as_str()) {
                 pair_frequencies.remove(&best_pair);
 
@@ -722,33 +721,34 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         progress(BuildProgress::BuildSharedTransitions);
 
-        let mut transitions = HashMap::<&[T], HashMap<(&[T], &[T]), usize>>::new();
         let min_len = recipe.from_depth + recipe.to_depth;
 
-        for document in &documents {
-            if document.len() < min_len {
-                continue;
-            }
+        let transitions = documents.par_iter()
+            .filter_map(|document| {
+                if document.len() < min_len {
+                    return None;
+                }
 
-            let mut document_transitions = HashMap::<(&[T], &[T]), usize>::new();
+                let mut document_transitions = HashMap::<(&[T], &[T]), usize>::new();
 
-            let doc_len = document.len() - min_len;
-            let mut i = 0;
+                let doc_len = document.len() - min_len;
+                let mut i = 0;
 
-            while i < doc_len {
-                let transition = (
-                    &document[i..i + recipe.from_depth],
-                    &document[i + recipe.from_depth..i + min_len]
-                );
+                while i < doc_len {
+                    let transition = (
+                        &document[i..i + recipe.from_depth],
+                        &document[i + recipe.from_depth..i + min_len]
+                    );
 
-                *document_transitions.entry(transition)
-                    .or_default() += 1;
+                    *document_transitions.entry(transition)
+                        .or_default() += 1;
 
-                i += 1;
-            }
+                    i += 1;
+                }
 
-            transitions.insert(document, document_transitions);
-        }
+                Some((document.as_ref(), document_transitions))
+            })
+            .collect::<HashMap<&[T], HashMap<(&[T], &[T]), usize>>>();
 
         // Create transitions map for the whole dataset.
 
@@ -794,20 +794,27 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
             // Assign each document to the closest cluster.
 
+            let document_clusters = documents.par_iter()
+                .map(|document| {
+                    let mut best_cluster = 0;
+                    let mut best_similarity = f32::NEG_INFINITY;
+
+                    for (i, cluster) in clusters.iter().enumerate() {
+                        let similarity = cluster.similarity(document.iter().copied());
+
+                        if similarity > best_similarity {
+                            best_similarity = similarity;
+                            best_cluster = i;
+                        }
+                    }
+
+                    best_cluster
+                })
+                .collect::<Vec<usize>>();
+
             let mut documents_clusters = vec![Vec::new(); clusters.len()];
 
-            for document in &documents {
-                let result = clusters.par_iter()
-                    .enumerate()
-                    .max_by(|(_, cluster_a), (_, cluster_b)| {
-                        let similarity_a = cluster_a.similarity(document.iter().copied());
-                        let similarity_b = cluster_b.similarity(document.iter().copied());
-
-                        similarity_a.partial_cmp(&similarity_b).unwrap_or(Ordering::Equal)
-                    });
-
-                let document_cluster = result.map(|(i, _)| i).unwrap_or(0);
-
+            for (document, document_cluster) in documents.iter().zip(document_clusters) {
                 documents_clusters[document_cluster].push(document);
             }
 
