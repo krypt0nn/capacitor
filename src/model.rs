@@ -369,13 +369,81 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         // Fit tokenizer on documents.
 
         // Prefill tokenizer with some standard tokens.
-        let mut tokens = HashSet::new();
 
-        let mut max_token_len = Self::START_TOKEN.len()
-            .max(Self::STOP_TOKEN.len());
+        fn internal_word(
+            word: &str,
+            alphabet: &mut HashMap<String, u32>,
+            vocab: &mut Vec<String>
+        ) -> u32 {
+            if let Some(&id) = alphabet.get(word) {
+                return id;
+            }
 
-        tokens.insert(Self::START_TOKEN.to_string());
-        tokens.insert(Self::STOP_TOKEN.to_string());
+            let id = vocab.len() as u32;
+
+            alphabet.insert(word.to_string(), id);
+            vocab.push(word.to_string());
+
+            id
+        }
+
+        fn document_pairs(
+            document: &[u32]
+        ) -> HashMap<(u32, u32), u64> {
+            let mut counts = HashMap::with_capacity(document.len());
+
+            for pair in document.windows(2) {
+                let value: &mut u64 = counts.entry((pair[0], pair[1]))
+                    .or_default();
+
+                *value = value.saturating_add(1);
+            }
+
+            counts
+        }
+
+        fn replace_pairs(
+            document: &mut Vec<u32>,
+            id_1: u32,
+            id_2: u32,
+            new_id: u32
+        ) {
+            let mut i = 0;
+            let mut j = 0;
+
+            while j < document.len() {
+                if j + 1 < document.len()
+                    && document[j] == id_1
+                    && document[j + 1] == id_2
+                {
+                    document[i] = new_id;
+
+                    j += 2;
+                } else {
+                    document[i] = document[j];
+
+                    j += 1;
+                }
+
+                i += 1;
+            }
+
+            document.truncate(i);
+        }
+
+        let mut alphabet = HashMap::<String, u32>::new();
+        let mut vocab = Vec::<String>::new();
+
+        // Special tags must never be merged with other tokens.
+        let mut special_tags = HashSet::<u32>::new();
+
+        special_tags.insert(internal_word(Self::START_TOKEN, &mut alphabet, &mut vocab));
+        special_tags.insert(internal_word(Self::STOP_TOKEN, &mut alphabet, &mut vocab));
+
+        // Pre-fill latin letters, digits and special characters.
+        for c in 32..127_u8 {
+            internal_word(&(c as char).to_string(), &mut alphabet, &mut vocab);
+        }
 
         // Pre-tokenize input documents.
         let total = documents.iter()
@@ -419,10 +487,14 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                     if found {
                         let token = document[i..=j].iter().collect::<String>();
 
-                        max_token_len = max_token_len.max(token.len());
+                        let id = internal_word(
+                            &token,
+                            &mut alphabet,
+                            &mut vocab
+                        );
 
-                        tokens.insert(token.clone());
-                        pre_tokenized_document.push(token);
+                        special_tags.insert(id);
+                        pre_tokenized_document.push(id);
 
                         i = j + 1;
 
@@ -436,195 +508,213 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                     document[i].to_string()
                 };
 
-                max_token_len = max_token_len.max(token.len());
-
-                tokens.insert(token.clone());
-                pre_tokenized_document.push(token);
+                pre_tokenized_document.push(internal_word(
+                    &token,
+                    &mut alphabet,
+                    &mut vocab
+                ));
 
                 i += 1;
             }
 
-            pre_tokenized_documents.push(
-                pre_tokenized_document.into_boxed_slice()
-            );
+            pre_tokenized_documents.push(pre_tokenized_document);
 
             progress(BuildProgress::PreTokenize { current, total });
         }
 
         // Train tokens model.
+        //
+        // Take small part of the pre-tokenized documents to speed-up BPE
+        // model building. Training merges are applied to a copy of the
+        // sample so that the full corpus keeps its pre-tokenization intact
+        // for the final tokenization and model stages below.
+
+        let mut taken_samples = 0;
+
+        let mut training_documents = pre_tokenized_documents.iter()
+            .filter(|document| {
+                if taken_samples > recipe.tokenizer.num_samples {
+                    return false;
+                }
+
+                taken_samples += document.len();
+
+                true
+            })
+            .cloned()
+            .collect::<Vec<Vec<u32>>>();
+
         progress(BuildProgress::FitTokenizer {
-            current: tokens.len(),
+            current: vocab.len(),
             total: recipe.tokenizer.num_tokens
         });
 
-        while tokens.len() < recipe.tokenizer.num_tokens {
-            // Take small part of the tokenized documents to speed-up BPE model
-            // building.
-            let mut taken_samples = 0;
+        // Count symbol pairs and index documents containing each pair.
+        let mut pair_frequencies = HashMap::<(u32, u32), u64>::new();
+        let mut pair_documents = HashMap::<(u32, u32), Vec<u32>>::new();
+        let mut seen_documents = HashSet::new();
 
-            let pre_tokenized_documents = pre_tokenized_documents.iter()
-                .filter(|document| {
-                    if taken_samples > recipe.tokenizer.num_samples {
-                        return false;
-                    }
-
-                    taken_samples += document.len();
-
-                    true
-                })
-                .collect::<Box<[_]>>();
-
-            // Find already learned multi-character tokens.
-            let tokenized_documents = pre_tokenized_documents.par_iter()
-                .map(|pre_tokenized_document| {
-                    let n = pre_tokenized_document.len();
-
-                    let mut tokenized_document = Vec::with_capacity(n);
-                    let mut i = 0;
-
-                    while i < n {
-                        let mut j = (i + max_token_len).min(n);
-
-                        while j > i {
-                            let token = pre_tokenized_document[i..j].concat();
-
-                            if tokens.contains(&token) {
-                                tokenized_document.push(token);
-
-                                break;
-                            }
-
-                            j -= 1;
-                        }
-
-                        if i == j {
-                            // Should be impossible to hit because we've made
-                            // one-character tokens on pre-tokenization stage.
-                            i += 1;
-                        } else {
-                            i = j;
-                        }
-                    }
-
-                    tokenized_document.into_boxed_slice()
-                })
-                .collect::<Box<[Box<[String]>]>>();
-
-            // Count token pairs.
-            let mut token_pairs_frequencies = HashMap::<(&str, &str), u32>::with_capacity(tokens.len());
-
-            for tokenized_document in &tokenized_documents {
-                let mut i = 1;
-                let n = tokenized_document.len();
-
-                while i < n {
-                    let value = token_pairs_frequencies.entry((&tokenized_document[i - 1], &tokenized_document[i]))
-                        .or_default();
-
-                    *value = value.saturating_add(1);
-
-                    i += 1;
+        for (document_index, document) in training_documents.iter().enumerate() {
+            for (pair, count) in document_pairs(document.as_ref()) {
+                // Never let special tags merge with other tokens.
+                if special_tags.contains(&pair.0) || special_tags.contains(&pair.1) {
+                    continue;
                 }
-            }
 
-            // Stop learning if no more token pairs available.
-            if token_pairs_frequencies.is_empty() {
-                break;
-            }
+                let value = pair_frequencies.entry(pair)
+                    .or_default();
 
-            // Sort token pairs by their frequency.
-            let mut token_pairs_frequencies = token_pairs_frequencies.into_iter()
-                .collect::<Vec<_>>();
+                *value = value.saturating_add(count);
 
-            token_pairs_frequencies.sort_by(|a, b| {
-                b.1.cmp(&a.1)
-            });
-
-            // Store new token.
-            let mut stored = false;
-
-            for ((token_1, token_2), _) in token_pairs_frequencies {
-                let new_token = [token_1, token_2].concat();
-                let new_token_len = new_token.len();
-
-                if tokens.insert(new_token) {
-                    max_token_len = max_token_len.max(new_token_len);
-
-                    progress(BuildProgress::FitTokenizer {
-                        current: tokens.len(),
-                        total: recipe.tokenizer.num_tokens
-                    });
-
-                    stored = true;
-
-                    break;
-                }
-            }
-
-            // Stop learning new tokens if we couldn't make a new token from
-            // available pairs.
-            if !stored {
-                break;
+                pair_documents.entry(pair)
+                    .or_default()
+                    .push(document_index as u32);
             }
         }
 
-        // Tokenize documents.
+        while vocab.len() < recipe.tokenizer.num_tokens {
+            // Take the most frequent pair.
+
+            let Some((&best_pair, _)) = pair_frequencies.iter()
+                .max_by_key(|(_, frequency)| **frequency)
+            else {
+                // Stop learning if no more token pairs available.
+                break;
+            };
+
+            let mut new_token = vocab[best_pair.0 as usize].clone();
+
+            new_token.push_str(&vocab[best_pair.1 as usize]);
+
+            // ponytail: merging may produce an already known word - drop the
+            // pair instead of learning a duplicate token.
+            if alphabet.contains_key(new_token.as_str()) {
+                pair_frequencies.remove(&best_pair);
+
+                continue;
+            }
+
+            let new_id = vocab.len() as u32;
+
+            alphabet.insert(new_token.clone(), new_id);
+            vocab.push(new_token);
+
+            // Rewrite documents which contain the merged pair, updating pair
+            // statistics incrementally.
+            let affected_document = pair_documents.remove(&best_pair)
+                .unwrap_or_default();
+
+            seen_documents.clear();
+
+            for document_index in affected_document {
+                if !seen_documents.insert(document_index) {
+                    continue;
+                }
+
+                let document = &mut training_documents[document_index as usize];
+
+                // Remove old pairs of the document from global statistics.
+
+                for (pair, count) in document_pairs(document.as_ref()) {
+                    if let Some(frequency) = pair_frequencies.get_mut(&pair) {
+                        *frequency -= count.min(*frequency);
+
+                        if *frequency == 0 {
+                            pair_frequencies.remove(&pair);
+                            pair_documents.remove(&pair);
+                        }
+                    }
+                }
+
+                // Merge the pairs in place.
+
+                replace_pairs(document, best_pair.0, best_pair.1, new_id);
+
+                if document.is_empty() {
+                    continue;
+                }
+
+                // Add new pairs of the document back to global statistics.
+
+                for (pair, count) in document_pairs(document) {
+                    // Never let special tags merge with other tokens.
+                    if special_tags.contains(&pair.0) || special_tags.contains(&pair.1) {
+                        continue;
+                    }
+
+                    let value = pair_frequencies.entry(pair)
+                        .or_default();
+
+                    *value = value.saturating_add(count);
+
+                    pair_documents.entry(pair)
+                        .or_default()
+                        .push(document_index);
+                }
+            }
+
+            progress(BuildProgress::FitTokenizer {
+                current: vocab.len(),
+                total: recipe.tokenizer.num_tokens
+            });
+        }
+
+        // Build tokens map.
 
         progress(BuildProgress::BuildTokensMap);
 
-        let mut tokenized_documents = Vec::with_capacity(
-            pre_tokenized_documents.len()
-        );
+        let tokens_map = TokensMap::<SIZE, T>::from_words(vocab.iter())?;
 
-        // Find already learned multi-character tokens.
-        for pre_tokenized_document in &pre_tokenized_documents {
-            let n = pre_tokenized_document.len();
+        let words_table = tokens_map.as_words_table();
 
-            let mut tokenized_document = Vec::with_capacity(n);
-            let mut i = 0;
+        // Tokenize documents.
+        //
+        // Find already learned multi-character tokens in every document of
+        // the full corpus - including ones which were not used for tokenizer
+        // training.
 
-            while i < n {
-                let mut j = (i + max_token_len).min(n);
+        let max_token_len = tokens_map.max_token_len();
 
-                while j > i {
-                    let token = pre_tokenized_document[i..j].concat();
+        let documents = pre_tokenized_documents.into_par_iter()
+            .map(|document| {
+                let n = document.len();
 
-                    if tokens.contains(&token) {
-                        tokenized_document.push(token);
+                let mut tokenized_document = Vec::with_capacity(n);
 
-                        break;
+                // Reused buffer for candidate token strings.
+                let mut token = String::new();
+
+                let mut i = 0;
+
+                while i < n {
+                    let mut j = (i + max_token_len).min(n);
+
+                    while j > i {
+                        token.clear();
+
+                        for id in &document[i..j] {
+                            token.push_str(&vocab[*id as usize]);
+                        }
+
+                        if let Some(&t) = words_table.get(token.as_bytes()) {
+                            tokenized_document.push(t);
+
+                            break;
+                        }
+
+                        j -= 1;
                     }
 
-                    j -= 1;
+                    if i == j {
+                        // Should be impossible to hit because we've made
+                        // one-character tokens on pre-tokenization stage.
+                        i += 1;
+                    } else {
+                        i = j;
+                    }
                 }
 
-                if i == j {
-                    // Should be impossible to hit because we've made
-                    // one-character tokens on pre-tokenization stage.
-                    i += 1;
-                } else {
-                    i = j;
-                }
-            }
-
-            tokenized_documents.push(
                 tokenized_document.into_boxed_slice()
-            );
-        }
-
-        let documents = tokenized_documents.into_boxed_slice();
-
-        // Build tokens map.
-        let tokens_map = TokensMap::<SIZE, T>::from_words(tokens)?;
-
-        let tokens_table = tokens_map.as_words_table();
-
-        // Update documents to store digitized tokens.
-        let documents = documents.into_par_iter()
-            .map(|document| {
-                document.into_iter()
-                    .flat_map(|word| tokens_table.get(word.as_bytes()).cloned())
-                    .collect::<Box<[T]>>()
             })
             .collect::<Box<[Box<[T]>]>>();
 
@@ -683,7 +773,9 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             })
             .collect::<Vec<_>>();
 
-        let transitions_map = TransitionsMap::<SIZE, T>::from_transitions(cummulative_transitions)?;
+        let transitions_map = TransitionsMap::<SIZE, T>::from_transitions(
+            cummulative_transitions
+        )?;
 
         // Build model experts if needed.
         let mut experts = Vec::with_capacity(recipe.total_experts);
@@ -813,7 +905,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             .or_insert(String::from("10"));
 
         recipe.keys.entry(String::from("model.inference.max_tokens"))
-            .or_insert(String::from("200"));
+            .or_insert(String::from("1024"));
 
         // Build the model.
 
@@ -971,7 +1063,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         let max_tokens = self.keys.get("model.inference.max_tokens")
             .map(|value| value.parse::<usize>())
-            .unwrap_or(Ok(200))?;
+            .unwrap_or(Ok(1024))?;
 
         Ok(TokensGenerator {
             model: self,

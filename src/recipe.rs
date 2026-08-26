@@ -131,8 +131,8 @@ impl Default for Recipe {
             files: Vec::new(),
             tokenizer: Tokenizer {
                 make_lowercase: false,
-                num_tokens: 256,
-                num_samples: 8192
+                num_tokens: 1024,
+                num_samples: 256 * 1024 * 1024
             },
             template: String::from("{{content}}"),
             stop_tokens: vec![
@@ -202,9 +202,10 @@ impl std::fmt::Display for Recipe {
         }
 
         lines.push(format!(
-            "{}Tokenizer {}",
+            "{}Tokenizer {}/{}",
             if self.tokenizer.make_lowercase { "Lowercase " } else { "" },
-            self.tokenizer.num_tokens
+            self.tokenizer.num_tokens,
+            self.tokenizer.num_samples
         ));
 
         lines.push(format!("Template {}", self.template));
@@ -237,8 +238,8 @@ impl FromStr for Recipe {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut tokenizer = Tokenizer {
             make_lowercase: false,
-            num_tokens: 256,
-            num_samples: 8192
+            num_tokens: 1024,
+            num_samples: 256 * 1024 * 1024
         };
         let mut template = String::from("{{content}}");
         let mut stop_tokens = Vec::new();
@@ -332,19 +333,19 @@ impl FromStr for Recipe {
             }
 
             else if let Some(value) = line.strip_prefix("Split ") {
-                if let Some((delimiter, path)) = value.split_once(" File ") {
-                    files.push(File {
-                        path: PathBuf::from(path.trim()),
-                        delimiter: delimiter.trim().to_string(),
-                        shuffle: false
-                    });
-                }
-
-                else if let Some((delimiter, path)) = value.split_once(" Shuffle File ") {
+                if let Some((delimiter, path)) = value.split_once(" Shuffle File ") {
                     files.push(File {
                         path: PathBuf::from(path.trim()),
                         delimiter: delimiter.trim().to_string(),
                         shuffle: true
+                    });
+                }
+
+                else if let Some((delimiter, path)) = value.split_once(" File ") {
+                    files.push(File {
+                        path: PathBuf::from(path.trim()),
+                        delimiter: delimiter.trim().to_string(),
+                        shuffle: false
                     });
                 }
 
@@ -417,8 +418,8 @@ fn test_recipe() -> anyhow::Result<()> {
         ],
         tokenizer: Tokenizer {
             make_lowercase: true,
-            num_tokens: 256,
-            num_samples: 8192
+            num_tokens: 1024,
+            num_samples: 256 * 1024 * 1024
         },
         template: String::from("{{content}}"),
         stop_tokens: vec![
