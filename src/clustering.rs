@@ -1,7 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// capacitor
+// Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.ru>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use std::collections::{HashMap, HashSet};
 use std::cmp::Ordering;
 
-use rand_chacha::rand_core::RngCore;
+use rand_chacha::rand_core::Rng;
 use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -48,7 +66,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
     mut clusters_num: usize,
     mut centroids_num: usize,
     documents: impl AsRef<[Box<[T]>]>,
-    rand: &mut impl RngCore
+    rng: &mut impl Rng
 ) -> anyhow::Result<Box<[Cluster<T>]>> {
     let documents = documents.as_ref();
 
@@ -110,7 +128,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
     let mut cluster = Vec::with_capacity(centroids_num);
 
     for _ in 0..centroids_num {
-        let document = documents_set.swap_remove(rand.next_u64() as usize % documents_set.len());
+        let document = documents_set.swap_remove(rng.next_u64() as usize % documents_set.len());
 
         cluster.push(document);
     }
@@ -227,7 +245,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
 
         for _ in 0..centroids_num {
             let mut curr_distance = 0.0;
-            let cutoff = rand.next_u32() as f32 / u32::MAX as f32 * total_similarity;
+            let cutoff = rng.next_u32() as f32 / u32::MAX as f32 * total_similarity;
 
             for (document, similarity) in &cummulative_similarities {
                 if cluster.contains(*document) {

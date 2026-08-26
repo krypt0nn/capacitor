@@ -1,17 +1,88 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// capacitor
+// Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.ru>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 use std::iter::FusedIterator;
 
-use rand_chacha::rand_core::RngCore;
+use rand_chacha::rand_core::Rng;
 use rayon::prelude::*;
 
-use crate::rand;
 use crate::tokens::{Token, TokensMap};
-use crate::tokenizer::{Tokenizer, WordTokenizer};
 use crate::transitions::{Transition, TransitionsMap};
 use crate::clustering::{Cluster, clusterize};
-use crate::recipe::{Recipe, Tokenizer as RecipeTokenizer};
+use crate::recipe::Recipe;
+
+pub type Model8 = Model<1, u8>;
+pub type Model16 = Model<2, u16>;
+pub type Model32 = Model<4, u32>;
+pub type Model64 = Model<8, u64>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuildProgress {
+    /// Read dataset documents.
+    ReadFiles {
+        /// Processed files.
+        current: usize,
+
+        /// Total files.
+        total: usize
+    },
+
+    /// Pre-tokenize dataset documents.
+    PreTokenize {
+        /// Processed bytes.
+        current: u64,
+
+        /// Total bytes.
+        total: u64
+    },
+
+    /// Fit BPE tokenizer on pre-tokenized dataset documents.
+    FitTokenizer {
+        /// Learned tokens.
+        current: usize,
+
+        /// Total tokens to learn.
+        total: usize
+    },
+
+    /// Build binary searchable tokens map for trained BPE tokenizer.
+    BuildTokensMap,
+
+    /// Build shared transitions table.
+    BuildSharedTransitions,
+
+    /// Clusterize datasets into experts count.
+    ClusterizeDatasets,
+
+    /// Build model experts.
+    BuildExperts {
+        /// Built experts.
+        current: usize,
+
+        /// Total experts.
+        total: usize
+    },
+
+    /// Finish model building.
+    Done
+}
 
 #[derive(Debug, Clone)]
 pub struct Expert<const SIZE: usize, T: Token<SIZE>> {
@@ -36,7 +107,10 @@ impl<const SIZE: usize, T: Token<SIZE>> Expert<SIZE, T> {
     }
 
     #[inline]
-    pub fn find_transitions(&self, from: impl AsRef<[T]>) -> HashSet<Transition<SIZE, T>> {
+    pub fn find_transitions(
+        &self,
+        from: impl AsRef<[T]>
+    ) -> HashSet<Transition<SIZE, T>> {
         self.transitions.find_transitions(from)
     }
 }
@@ -50,8 +124,8 @@ pub struct Model<const SIZE: usize, T: Token<SIZE>> {
 }
 
 impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
-    pub const START_TOKEN: &'static str = "<|start|>";
-    pub const STOP_TOKEN: &'static str = "<|stop|>";
+    pub const START_TOKEN: &str = "<|start|>";
+    pub const STOP_TOKEN: &str = "<|stop|>";
 
     pub fn open(model: impl AsRef<[u8]>) -> anyhow::Result<Self> {
         let model = model.as_ref();
@@ -65,8 +139,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
             anyhow::bail!("invalid model format: not a capacitor model");
         }
 
-        if &model[9..11] != b"v1" {
-            anyhow::bail!("unsupported model format: v1 expected, got {}", String::from_utf8_lossy(&model[9..11]));
+        if &model[9..11] != b"v2" {
+            anyhow::bail!("unsupported model format: v2 expected, got {}", String::from_utf8_lossy(&model[9..11]));
         }
 
         let keys_num = u16::from_le_bytes([model[11], model[12]]) as usize;
@@ -194,47 +268,47 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         // this model but who cares?
         let mut model = Vec::new();
 
-        model.extend_from_slice(b"capacitorv1");
+        model.extend(b"capacitorv2");
 
         // Encode metadata keys.
 
-        model.extend_from_slice(&(self.keys.len() as u16).to_le_bytes());
+        model.extend((self.keys.len() as u16).to_le_bytes());
 
         for (key, value) in self.keys {
             model.push(key.len() as u8);
-            model.extend_from_slice(&(value.len() as u16).to_le_bytes());
-            model.extend_from_slice(key.as_bytes());
-            model.extend_from_slice(value.as_bytes());
+            model.extend((value.len() as u16).to_le_bytes());
+            model.extend(key.as_bytes());
+            model.extend(value.as_bytes());
         }
 
         // Encode tokens map.
 
         let tokens = self.tokens.into_inner();
 
-        model.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
+        model.extend((tokens.len() as u64).to_le_bytes());
         model.extend(tokens);
 
         // Encode base model transitions map.
 
         let transitions = self.transitions.into_inner();
 
-        model.extend_from_slice(&(transitions.len() as u64).to_le_bytes());
+        model.extend((transitions.len() as u64).to_le_bytes());
         model.extend(transitions);
 
         // Encode experts.
 
-        model.extend_from_slice(&(self.experts.len() as u32).to_le_bytes());
+        model.extend(&(self.experts.len() as u32).to_le_bytes());
 
         for expert in self.experts {
             let cluster = expert.cluster.into_inner();
             let transitions = expert.transitions.into_inner();
 
-            model.extend_from_slice(&(cluster.len() as u32).to_le_bytes());
-            model.extend_from_slice(&(transitions.len() as u64).to_le_bytes());
+            model.extend((cluster.len() as u32).to_le_bytes());
+            model.extend((transitions.len() as u64).to_le_bytes());
 
             for (token, rank) in cluster {
-                model.extend_from_slice(&token.encode());
-                model.extend_from_slice(&rank.to_le_bytes());
+                model.extend(token.encode());
+                model.extend(rank.to_le_bytes());
             }
 
             model.extend(transitions);
@@ -245,68 +319,288 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
     pub fn build(
         mut recipe: Recipe,
-        mut progress: impl FnMut(usize, usize)
+        mut progress: impl FnMut(BuildProgress)
     ) -> anyhow::Result<Self> {
         // Read documents from the dataset files.
 
         let mut documents = Vec::with_capacity(recipe.files.len());
 
-        for file in recipe.files {
-            let dataset = std::fs::read_to_string(file.path)?;
+        progress(BuildProgress::ReadFiles {
+            current: 0,
+            total: recipe.files.len()
+        });
+
+        for (i, file) in recipe.files.iter().enumerate() {
+            let dataset = std::fs::read_to_string(&file.path)?;
 
             for document in dataset.split(&file.delimiter) {
-                documents.push(document.trim().to_string());
+                documents.push(format!(
+                    "{}{document}{}",
+                    Self::START_TOKEN,
+                    Self::STOP_TOKEN
+                ));
+            }
+
+            progress(BuildProgress::ReadFiles {
+                current: i + 1,
+                total: recipe.files.len()
+            });
+        }
+
+        // Fit tokenizer on documents.
+
+        // Prefill tokenizer with some standard tokens.
+        let mut tokens = HashSet::new();
+
+        let mut max_token_len = Self::START_TOKEN.len()
+            .max(Self::STOP_TOKEN.len());
+
+        tokens.insert(Self::START_TOKEN.to_string());
+        tokens.insert(Self::STOP_TOKEN.to_string());
+
+        // for c in 0..128_u8 {
+        //     // Standard ASCII characters.
+        //     tokens.insert((c as char).to_string());
+        // }
+
+        // Pre-tokenize input documents.
+        let total = documents.iter()
+            .map(|document| document.len() as u64)
+            .sum::<u64>();
+
+        let mut current = 0;
+
+        let mut pre_tokenized_documents = Vec::with_capacity(documents.len());
+
+        progress(BuildProgress::PreTokenize { current, total });
+
+        for document in &documents {
+            current += document.len() as u64;
+
+            let document = document.chars().collect::<Box<[char]>>();
+
+            let n = document.len();
+            let mut i = 0;
+
+            let mut pre_tokenized_document = Vec::with_capacity(document.len());
+
+            while i < n {
+                // Preserve special tags as separate tokens.
+                if document[i] == '<' && i + 1 < n && document[i + 1] == '|' {
+                    let mut j = i + 2;
+                    let mut found = false;
+
+                    while j < n && (j - i) < 256 {
+                        if document[j] == '>' && document[j - 1] == '|' {
+                            found = true;
+
+                            break;
+                        }
+
+                        j += 1;
+                    }
+
+                    // If we found <|token|>, then store it. Otherwise process
+                    // < symbol as separate character.
+                    if found {
+                        let token = document[i..=j].iter().collect::<String>();
+
+                        max_token_len = max_token_len.max(token.len());
+
+                        tokens.insert(token.clone());
+                        pre_tokenized_document.push(token);
+
+                        i = j + 1;
+
+                        continue;
+                    }
+                }
+
+                let token = if recipe.tokenizer.make_lowercase {
+                    document[i].to_lowercase().collect::<String>()
+                } else {
+                    document[i].to_string()
+                };
+
+                max_token_len = max_token_len.max(token.len());
+
+                tokens.insert(token.clone());
+                pre_tokenized_document.push(token);
+
+                i += 1;
+            }
+
+            pre_tokenized_documents.push(
+                pre_tokenized_document.into_boxed_slice()
+            );
+
+            progress(BuildProgress::PreTokenize { current, total });
+        }
+
+        // Train tokens model.
+        progress(BuildProgress::FitTokenizer {
+            current: tokens.len(),
+            total: recipe.tokenizer.num_tokens
+        });
+
+        while tokens.len() < recipe.tokenizer.num_tokens {
+            // Find already learned multi-character tokens.
+            let tokenized_documents = pre_tokenized_documents.par_iter()
+                .map(|pre_tokenized_document| {
+                    let n = pre_tokenized_document.len();
+
+                    let mut tokenized_document = Vec::with_capacity(n);
+                    let mut i = 0;
+
+                    while i < n {
+                        let mut j = (i + max_token_len).min(n);
+
+                        while j > i {
+                            let token = pre_tokenized_document[i..j].concat();
+
+                            if tokens.contains(&token) {
+                                tokenized_document.push(token);
+
+                                break;
+                            }
+
+                            j -= 1;
+                        }
+
+                        if i == j {
+                            // Should be impossible to hit because we've made
+                            // one-character tokens on pre-tokenization stage.
+                            i += 1;
+                        } else {
+                            i = j;
+                        }
+                    }
+
+                    tokenized_document.into_boxed_slice()
+                })
+                .collect::<Box<[Box<[String]>]>>();
+
+            // Count token pairs.
+            let mut token_pairs_frequencies = HashMap::<(&str, &str), u32>::with_capacity(tokens.len());
+
+            for tokenized_document in &tokenized_documents {
+                let mut i = 1;
+                let n = tokenized_document.len();
+
+                while i < n {
+                    let value = token_pairs_frequencies.entry((&tokenized_document[i - 1], &tokenized_document[i]))
+                        .or_default();
+
+                    *value = value.saturating_add(1);
+
+                    i += 1;
+                }
+            }
+
+            // Stop learning if no more token pairs available.
+            if token_pairs_frequencies.is_empty() {
+                break;
+            }
+
+            // Sort token pairs by their frequency.
+            let mut token_pairs_frequencies = token_pairs_frequencies.into_iter()
+                .collect::<Vec<_>>();
+
+            token_pairs_frequencies.sort_by(|a, b| {
+                b.1.cmp(&a.1)
+            });
+
+            // Store new token.
+            let mut stored = false;
+
+            for ((token_1, token_2), _) in token_pairs_frequencies {
+                let new_token = [token_1, token_2].concat();
+                let new_token_len = new_token.len();
+
+                if tokens.insert(new_token) {
+                    max_token_len = max_token_len.max(new_token_len);
+
+                    progress(BuildProgress::FitTokenizer {
+                        current: tokens.len(),
+                        total: recipe.tokenizer.num_tokens
+                    });
+
+                    stored = true;
+
+                    break;
+                }
+            }
+
+            // Stop learning new tokens if we couldn't make a new token from
+            // available pairs.
+            if !stored {
+                break;
             }
         }
 
-        // Prepare tokenizer.
-
-        #[allow(irrefutable_let_patterns)]
-        let RecipeTokenizer::WordTokenizer { lowercase, punctuation } = recipe.tokenizer else {
-            anyhow::bail!("only word-tokenizer is currently supported");
-        };
-
-        let tokenizer = WordTokenizer { lowercase, punctuation };
-
         // Tokenize documents.
 
-        let documents = documents.into_par_iter()
-            .map(|document| {
-                let mut tokenized_document = Vec::new();
+        progress(BuildProgress::BuildTokensMap);
 
-                tokenized_document.push(Self::START_TOKEN.to_string());
+        let mut tokenized_documents = Vec::with_capacity(
+            pre_tokenized_documents.len()
+        );
 
-                for word in tokenizer.encode(document.as_bytes()) {
-                    tokenized_document.push(word?);
+        // Find already learned multi-character tokens.
+        for pre_tokenized_document in &pre_tokenized_documents {
+            let n = pre_tokenized_document.len();
+
+            let mut tokenized_document = Vec::with_capacity(n);
+            let mut i = 0;
+
+            while i < n {
+                let mut j = (i + max_token_len).min(n);
+
+                while j > i {
+                    let token = pre_tokenized_document[i..j].concat();
+
+                    if tokens.contains(&token) {
+                        tokenized_document.push(token);
+
+                        break;
+                    }
+
+                    j -= 1;
                 }
 
-                tokenized_document.push(Self::STOP_TOKEN.to_string());
+                if i == j {
+                    // Should be impossible to hit because we've made
+                    // one-character tokens on pre-tokenization stage.
+                    i += 1;
+                } else {
+                    i = j;
+                }
+            }
 
-                Ok(tokenized_document)
-            })
-            .collect::<anyhow::Result<Vec<Vec<String>>>>()?;
+            tokenized_documents.push(
+                tokenized_document.into_boxed_slice()
+            );
+        }
 
-        let words = documents.par_iter()
-            .flat_map(|document| document.par_iter())
-            .collect::<HashSet<_>>();
+        let documents = tokenized_documents.into_boxed_slice();
 
-        let tokens_map = TokensMap::<SIZE, T>::from_words(words)?;
+        // Build tokens map.
+        let tokens_map = TokensMap::<SIZE, T>::from_words(tokens)?;
 
-        // Hack for faster documents tokenization because `find_token` is O(n)
-        // and hashmap is O(1).
         let tokens_table = tokens_map.as_words_table();
 
+        // Update documents to store digitized tokens.
         let documents = documents.into_par_iter()
             .map(|document| {
                 document.into_iter()
-                    .flat_map(|word| tokens_table.get(&word).cloned())
+                    .flat_map(|word| tokens_table.get(word.as_bytes()).cloned())
                     .collect::<Box<[T]>>()
             })
             .collect::<Box<[Box<[T]>]>>();
 
-        drop(tokens_table);
-
         // Count transitions for every document.
+
+        progress(BuildProgress::BuildSharedTransitions);
 
         let mut transitions = HashMap::<&[T], HashMap<(&[T], &[T]), usize>>::new();
         let min_len = recipe.from_depth + recipe.to_depth;
@@ -361,83 +655,100 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         let transitions_map = TransitionsMap::<SIZE, T>::from_transitions(cummulative_transitions)?;
 
-        // Clusterize documents.
+        // Build model experts if needed.
+        let mut experts = Vec::with_capacity(recipe.total_experts);
 
-        let clusters = clusterize(
-            recipe.total_experts,
-            recipe.centroids,
-            &documents,
-            &mut rand()
-        )?;
+        if recipe.total_experts > 0 {
+            // Clusterize documents.
 
-        // Assign each document to the closest cluster.
+            progress(BuildProgress::ClusterizeDatasets);
 
-        let mut documents_clusters = vec![Vec::new(); clusters.len()];
+            let clusters = clusterize(
+                recipe.total_experts,
+                recipe.centroids,
+                &documents,
+                &mut crate::get_rng()
+            )?;
 
-        for document in &documents {
-            let result = clusters.par_iter()
-                .enumerate()
-                .max_by(|(_, cluster_a), (_, cluster_b)| {
-                    let similarity_a = cluster_a.similarity(document.iter().copied());
-                    let similarity_b = cluster_b.similarity(document.iter().copied());
+            // Assign each document to the closest cluster.
 
-                    similarity_a.partial_cmp(&similarity_b).unwrap_or(Ordering::Equal)
-                });
+            let mut documents_clusters = vec![Vec::new(); clusters.len()];
 
-            let document_cluster = result.map(|(i, _)| i).unwrap_or(0);
+            for document in &documents {
+                let result = clusters.par_iter()
+                    .enumerate()
+                    .max_by(|(_, cluster_a), (_, cluster_b)| {
+                        let similarity_a = cluster_a.similarity(document.iter().copied());
+                        let similarity_b = cluster_b.similarity(document.iter().copied());
 
-            documents_clusters[document_cluster].push(document);
-        }
+                        similarity_a.partial_cmp(&similarity_b).unwrap_or(Ordering::Equal)
+                    });
 
-        // Create experts from clusters.
+                let document_cluster = result.map(|(i, _)| i).unwrap_or(0);
 
-        let n = clusters.len();
-
-        let mut experts = Vec::with_capacity(n);
-
-        for (i, cluster) in clusters.into_iter().enumerate() {
-            progress(i, n);
-
-            let mut cluster_transitions = HashMap::<&(&[T], &[T]), usize>::new();
-
-            for document in &documents_clusters[i] {
-                if let Some(document_transitions) = transitions.get(document.as_ref()) {
-                    for (transition, count) in document_transitions.iter() {
-                        *cluster_transitions.entry(transition)
-                            .or_default() += *count;
-                    }
-                }
+                documents_clusters[document_cluster].push(document);
             }
 
-            let total_transitions = cluster_transitions.values()
-                .copied()
-                .sum::<usize>();
+            // Create experts from clusters.
 
-            let cluster_transitions = cluster_transitions.into_par_iter()
-                .map(|(transition, count)| {
-                    let frequency = count as f32 / total_transitions as f32;
+            let n = clusters.len();
 
-                    (transition.0, transition.1, (frequency * u32::MAX as f32) as u32)
-                })
-                .collect::<Vec<_>>();
-
-            let transitions = TransitionsMap::<SIZE, T>::from_transitions(cluster_transitions)?;
-
-            experts.push(Expert {
-                cluster,
-                transitions
+            progress(BuildProgress::BuildExperts {
+                current: 0,
+                total: n
             });
-        }
 
-        progress(n, n);
+            for (i, cluster) in clusters.into_iter().enumerate() {
+                let mut cluster_transitions = HashMap::<&(&[T], &[T]), usize>::new();
+
+                for document in &documents_clusters[i] {
+                    if let Some(document_transitions) = transitions.get(document.as_ref()) {
+                        for (transition, count) in document_transitions.iter() {
+                            *cluster_transitions.entry(transition)
+                                .or_default() += *count;
+                        }
+                    }
+                }
+
+                let total_transitions = cluster_transitions.values()
+                    .copied()
+                    .sum::<usize>();
+
+                let cluster_transitions = cluster_transitions.into_par_iter()
+                    .map(|(transition, count)| {
+                        let frequency = count as f32 / total_transitions as f32;
+
+                        (transition.0, transition.1, (frequency * u32::MAX as f32) as u32)
+                    })
+                    .collect::<Vec<_>>();
+
+                let transitions = TransitionsMap::<SIZE, T>::from_transitions(cluster_transitions)?;
+
+                experts.push(Expert {
+                    cluster,
+                    transitions
+                });
+
+                progress(BuildProgress::BuildExperts {
+                    current: i + 1,
+                    total: n
+                });
+            }
+        }
 
         // Prefill default metadata keys.
 
-        recipe.keys.entry(String::from("model.name"))
-            .or_insert(recipe.name.clone());
+        recipe.keys.entry(String::from("model.tokenizer.make_lowercase"))
+            .or_insert({
+                if recipe.tokenizer.make_lowercase {
+                    String::from("true")
+                } else {
+                    String::from("false")
+                }
+            });
 
-        recipe.keys.entry(String::from("model.tokens.tokenizer"))
-            .or_insert(recipe.tokenizer.to_string());
+        recipe.keys.entry(String::from("model.tokenizer.num_tokens"))
+            .or_insert(recipe.tokenizer.num_tokens.to_string());
 
         recipe.keys.entry(String::from("model.tokens.from_depth"))
             .or_insert(recipe.from_depth.to_string());
@@ -476,6 +787,8 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Build the model.
 
+        progress(BuildProgress::Done);
+
         Ok(Self {
             keys: recipe.keys,
             tokens: tokens_map,
@@ -509,39 +822,68 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         &self.experts
     }
 
-    pub fn get_tokenizer(&self) -> anyhow::Result<Option<RecipeTokenizer>> {
-        let Some(tokenizer) = self.keys.get("model.tokens.tokenizer") else {
-            return Ok(None);
-        };
+    /// Encode given text using model's tokenizer. Unknown tokens will be
+    /// skipped entirely.
+    pub fn tokenize(
+        &self,
+        text: impl AsRef<str>
+    ) -> Box<[T]> {
+        // Look if we need to convert input text to lowercase.
+        let make_lowercase = self.keys.get("model.tokenizer.make_lowercase")
+            .map(|value| value.as_str())
+            .unwrap_or("false") == "true";
 
-        Ok(Some(RecipeTokenizer::from_str(tokenizer)?))
-    }
+        // Pre-tokenize given text.
+        let text = text.as_ref();
 
-    pub fn encode_tokens(&self, text: impl AsRef<str>) -> anyhow::Result<Box<[T]>> {
-        #[allow(irrefutable_let_patterns)]
-        let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = self.get_tokenizer()? else {
-            anyhow::bail!("only word-tokenizer is currently supported");
-        };
+        let text = text.chars()
+            .map(|c| {
+                if make_lowercase {
+                    c.to_lowercase().to_string()
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect::<Box<[String]>>();
 
-        let tokenizer = WordTokenizer { lowercase, punctuation };
+        // Tokenize the text.
+        let n = text.len();
+        let max_token_len = self.tokens.max_token_len();
 
-        let text = text.as_ref().as_bytes();
+        let mut tokenized_text = Vec::with_capacity(n);
+        let mut i = 0;
 
-        let mut tokens = Vec::new();
+        while i < n {
+            let mut j = (i + max_token_len).min(n);
 
-        for token in tokenizer.encode(text) {
-            if let Some(token) = self.tokens.find_token(token?) {
-                tokens.push(token);
+            while j > i {
+                let token = text[i..j].concat();
+
+                if let Some(token) = self.tokens.find_token(&token) {
+                    tokenized_text.push(token);
+
+                    break;
+                }
+
+                j -= 1;
+            }
+
+            if i == j {
+                i += 1;
+            } else {
+                i = j;
             }
         }
 
-        Ok(tokens.into_boxed_slice())
+        tokenized_text.into_boxed_slice()
     }
 
-    pub fn generate_tokens<'model, R: RngCore>(
+    /// Get iterator that will generate new tokens to the given prefix, using
+    /// provided random numbers generator for seeding.
+    pub fn generate<'model, R: Rng>(
         &'model self,
-        query: impl AsRef<str>,
-        rand: &'model mut R
+        content: impl AsRef<str>,
+        rng: &'model mut R
     ) -> anyhow::Result<TokensGenerator<'model, SIZE, T, R>> {
         // Parse model's template, stop tokens and prefill values.
 
@@ -552,11 +894,7 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         let mut stop_tokens = Vec::new();
         let mut i = 0;
 
-        loop {
-            let Some(stop_token) = self.keys.get(&format!("model.inference.stop_tokens[{i}]")) else {
-                break;
-            };
-
+        while let Some(stop_token) = self.keys.get(&format!("model.inference.stop_tokens[{i}]")) {
             stop_tokens.push(stop_token.clone());
 
             i += 1;
@@ -572,18 +910,18 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         // Format the query according to the template and encode it to tokens.
 
-        let query = template
-            .replace("{{content}}", query.as_ref())
+        let generation_prefix = template
+            .replace("{{content}}", content.as_ref())
             .replace("{{start_token}}", &start_token)
             .replace("{{stop_token}}", &stop_token);
 
-        let mut query = self.encode_tokens(query)?;
+        let mut generation_prefix = self.tokenize(generation_prefix);
 
-        if query.is_empty() {
+        if generation_prefix.is_empty() {
             let start_token = self.tokens.find_token(&start_token)
                 .ok_or_else(|| anyhow::anyhow!("failed to find start token"))?;
 
-            query = Box::new([start_token]);
+            generation_prefix = Box::new([start_token]);
         }
 
         // Extend stop tokens with model's start and stop tokens.
@@ -607,9 +945,9 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
 
         Ok(TokensGenerator {
             model: self,
-            sequence_ptr: query.len() - 1,
-            sequence: query.to_vec(),
-            rand,
+            sequence_ptr: generation_prefix.len() - 1,
+            sequence: generation_prefix.to_vec(),
+            rng,
             stats: TokensGeneratorStats {
                 experts_use: HashMap::from_iter({
                     self.experts.iter()
@@ -624,11 +962,6 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         })
     }
 }
-
-pub type Model8 = Model<1, u8>;
-pub type Model16 = Model<2, u16>;
-pub type Model32 = Model<4, u32>;
-pub type Model64 = Model<8, u64>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokensGeneratorStats {
@@ -653,11 +986,11 @@ impl TokensGeneratorStats {
 }
 
 #[derive(Debug)]
-pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore> {
+pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: Rng> {
     model: &'model Model<SIZE, T>,
     sequence: Vec<T>,
     sequence_ptr: usize,
-    rand: &'model mut R,
+    rng: &'model mut R,
 
     stats: TokensGeneratorStats,
 
@@ -674,15 +1007,15 @@ pub struct TokensGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore
     max_tokens: usize
 }
 
-impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> TokensGenerator<'_, SIZE, T, R> {
+impl<const SIZE: usize, T: Token<SIZE>, R: Rng> TokensGenerator<'_, SIZE, T, R> {
     #[inline(always)]
     pub const fn stats(&self) -> &TokensGeneratorStats {
         &self.stats
     }
 }
 
-impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator<'_, SIZE, T, R> {
-    type Item = String;
+impl<const SIZE: usize, T: Token<SIZE>, R: Rng> Iterator for TokensGenerator<'_, SIZE, T, R> {
+    type Item = Box<[u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.top_k == 0 || self.sequence.len() >= self.max_tokens {
@@ -694,8 +1027,10 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
             let token = self.model.tokens.find_word(*token)?;
 
-            if self.stop_tokens.contains(&token) {
-                return None;
+            for stop_token in &self.stop_tokens {
+                if stop_token.as_bytes() == token.as_ref() {
+                    return None;
+                }
             }
 
             return Some(token);
@@ -760,19 +1095,19 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
             return None;
         }
 
-        if transitions.len() == 1 {
-            if let Some((_, to, _, _)) = transitions.first() {
-                self.sequence.extend_from_slice(to);
-                self.sequence_ptr += 1;
+        if let Some((_, to, _, _)) = transitions.first() {
+            self.sequence.extend_from_slice(to);
+            self.sequence_ptr += 1;
 
-                let token = self.model.tokens.find_word(to[0])?;
+            let token = self.model.tokens.find_word(to[0])?;
 
-                if self.stop_tokens.contains(&token) {
+            for stop_token in &self.stop_tokens {
+                if stop_token.as_bytes() == token.as_ref() {
                     return None;
                 }
-
-                return Some(token);
             }
+
+            return Some(token);
         }
 
         // Calculate normalized weights for each transition.
@@ -811,7 +1146,7 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
             .map(|transition| transition.2)
             .sum::<f64>();
 
-        let target_weight = self.rand.next_u32() as f64 / u32::MAX as f64 * total_weight;
+        let target_weight = self.rng.next_u32() as f64 / u32::MAX as f64 * total_weight;
 
         let mut curr_weight = 0.0;
 
@@ -824,8 +1159,10 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
                 let token = self.model.tokens.find_word(to[0])?;
 
-                if self.stop_tokens.contains(&token) {
-                    return None;
+                for stop_token in &self.stop_tokens {
+                    if stop_token.as_bytes() == token.as_ref() {
+                        return None;
+                    }
                 }
 
                 return Some(token);
@@ -837,26 +1174,14 @@ impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Iterator for TokensGenerator
 
         let token = self.model.tokens.find_word(transitions[0].1[0])?;
 
-        if self.stop_tokens.contains(&token) {
-            return None;
+        for stop_token in &self.stop_tokens {
+            if stop_token.as_bytes() == token.as_ref() {
+                return None;
+            }
         }
 
         Some(token)
     }
 }
 
-impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> FusedIterator for TokensGenerator<'_, SIZE, T, R> {}
-
-// #[derive(Debug)]
-// pub struct TextGenerator<'model, const SIZE: usize, T: Token<SIZE>, R: RngCore> {
-//     tokens: TokensGenerator<'model, SIZE, T, R>,
-//     buf: Vec<u8>
-// }
-
-// impl<const SIZE: usize, T: Token<SIZE>, R: RngCore> Read for TextGenerator<'_, SIZE, T, R> {
-//     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-//         if let Some(token) = self.tokens.next() {
-
-//         }
-//     }
-// }
+impl<const SIZE: usize, T: Token<SIZE>, R: Rng> FusedIterator for TokensGenerator<'_, SIZE, T, R> {}

@@ -1,3 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// capacitor
+// Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.ru>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::cmp::Ordering;
@@ -27,7 +45,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
         let map: Box<[u8]> = map.into();
 
         if map.len() < 2 {
-            anyhow::bail!("transitions map can't be shorter than 2 bytes");
+            anyhow::bail!("transitions map cannot be shorter than 2 bytes");
         }
 
         let from_count = map[0] as usize;
@@ -35,7 +53,7 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
 
         let record_size = from_count * SIZE + to_count * SIZE + 4;
 
-        if (map.len() - 2) % record_size != 0 {
+        if !(map.len() - 2).is_multiple_of(record_size) {
             anyhow::bail!("invalid transitions map layout");
         }
 
@@ -102,18 +120,18 @@ impl<const SIZE: usize, T: Token<SIZE>> TransitionsMap<SIZE, T> {
 
     /// Amount of transitions stored in the map.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         (self.map.len() - 2) / self.record_size
     }
 
     /// Amount of bytes stored in the transitions map.
     #[inline]
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         self.map.len()
     }
 
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.map.len() < 3
     }
 

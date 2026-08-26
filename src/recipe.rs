@@ -1,68 +1,71 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// capacitor
+// Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.ru>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
+fn parse_num(value: &str) -> Option<usize> {
+    if let Some(value) = value.strip_suffix("g") {
+        value.parse::<usize>()
+            .map(|value| value * 1024 * 1024 * 1024)
+            .ok()
+    }
+
+    else if let Some(value) = value.strip_suffix("m") {
+        value.parse::<usize>()
+            .map(|value| value * 1024 * 1024)
+            .ok()
+    }
+
+    else if let Some(value) = value.strip_suffix("k") {
+        value.parse::<usize>()
+            .map(|value| value * 1024)
+            .ok()
+    }
+
+    else {
+        value.parse::<usize>().ok()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct File {
+    /// Path to the dataset file.
     pub path: PathBuf,
+
+    /// Documents delimiter.
     pub delimiter: String
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Tokenizer {
-    WordTokenizer {
-        lowercase: bool,
-        punctuation: bool
-    }
-}
+pub struct Tokenizer {
+    /// Convert text characters to lowercase.
+    pub make_lowercase: bool,
 
-impl std::fmt::Display for Tokenizer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WordTokenizer { lowercase: false, punctuation: false } => f.write_str("word-tokenizer"),
-            Self::WordTokenizer { lowercase: false, punctuation: true } => f.write_str("word-tokenizer[punctuation]"),
-            Self::WordTokenizer { lowercase: true, punctuation: false } => f.write_str("word-tokenizer[lowercase]"),
-            Self::WordTokenizer { lowercase: true, punctuation: true } => f.write_str("word-tokenizer[lowercase,punctuation]")
-        }
-    }
-}
-
-impl FromStr for Tokenizer {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(params) = s.strip_prefix("word-tokenizer") {
-            let mut lowercase = false;
-            let mut punctuation = false;
-
-            for param in params.trim_matches(['[', ']']).split(',') {
-                match param {
-                    "lowercase" => lowercase = true,
-                    "punctuation" => punctuation = true,
-
-                    _ => anyhow::bail!("unknown word tokenizer parameter: {param}")
-                }
-            }
-
-            Ok(Self::WordTokenizer {
-                lowercase,
-                punctuation
-            })
-        }
-
-        else {
-            anyhow::bail!("unknown tokenizer: {s}");
-        }
-    }
+    /// How many tokens BPE tokenizer should learn.
+    pub num_tokens: usize
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recipe {
-    /// Name of the model.
-    pub name: String,
-
     /// Metadata key-values table.
     pub keys: HashMap<String, String>,
 
@@ -74,14 +77,16 @@ pub struct Recipe {
 
     /// Formatting rule for the user's queries.
     ///
-    /// - `{{query}}` - user query's content.
-    /// - `{{start_token}}` - start token.
-    /// - `{{stop_token}}` - stop token.
+    /// | Pattern           | Description                      |
+    /// | ----------------- | -------------------------------- |
+    /// | `{{content}}`     | User message (generation prefix) |
+    /// | `{{start_token}}` | Model document start token       |
+    /// | `{{stop_token}}`  | Model document stop token        |
     ///
-    /// By default `{{query}}` template is used.
+    /// By default `{{content}}` template is used.
     pub template: String,
 
-    /// Stop words after which the inference should be killed. Stop words are
+    /// Stop words after which the inference must be killed. Stop words are
     /// not returned to the user.
     pub stop_tokens: Vec<String>,
 
@@ -114,12 +119,11 @@ impl Recipe {
 impl Default for Recipe {
     fn default() -> Self {
         Self {
-            name: String::from("new-model"),
             keys: HashMap::new(),
             files: Vec::new(),
-            tokenizer: Tokenizer::WordTokenizer {
-                lowercase: true,
-                punctuation: false
+            tokenizer: Tokenizer {
+                make_lowercase: false,
+                num_tokens: 1024
             },
             template: String::from("{{content}}"),
             stop_tokens: vec![
@@ -144,6 +148,14 @@ impl std::fmt::Display for Recipe {
             .collect::<Vec<String>>();
 
         let keys = self.keys.iter()
+            .filter(|(key, _)| {
+                ![
+                    "model.name",
+                    "model.description",
+                    "model.author",
+                    "model.license"
+                ].contains(&key.as_str())
+            })
             .map(|(key, value)| format!("Set {key} = {value}"))
             .collect::<Vec<String>>();
 
@@ -157,14 +169,38 @@ impl std::fmt::Display for Recipe {
             })
             .collect::<Vec<String>>();
 
-        let mut lines = vec![
-            format!("Name {}", self.name),
-            format!("Tokenizer {}", self.tokenizer),
-            format!("Template {}", self.template),
-            format!("Depth {}/{}", self.from_depth, self.to_depth),
-            format!("Experts {}/{}", self.active_experts, self.total_experts),
-            format!("Centroids {}", self.centroids)
-        ];
+        let mut lines = Vec::new();
+
+        if let Some(value) = self.keys.get("model.name") {
+            lines.push(format!("Name {value}"));
+        }
+
+        if let Some(value) = self.keys.get("model.description") {
+            lines.push(format!("Description {value}"));
+        }
+
+        if let Some(value) = self.keys.get("model.author") {
+            lines.push(format!("Author {value}"));
+        }
+
+        if let Some(value) = self.keys.get("model.license") {
+            lines.push(format!("License {value}"));
+        }
+
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+
+        lines.push(format!(
+            "{}Tokenizer {}",
+            if self.tokenizer.make_lowercase { "Lowercase " } else { "" },
+            self.tokenizer.num_tokens
+        ));
+
+        lines.push(format!("Template {}", self.template));
+        lines.push(format!("Depth {}/{}", self.from_depth, self.to_depth));
+        lines.push(format!("Experts {}/{}", self.active_experts, self.total_experts));
+        lines.push(format!("Centroids {}", self.centroids));
 
         if !stop_tokens.is_empty() {
             lines.push(String::new());
@@ -189,8 +225,10 @@ impl FromStr for Recipe {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut name = None;
-        let mut tokenizer = None;
+        let mut tokenizer = Tokenizer {
+            make_lowercase: false,
+            num_tokens: 1024
+        };
         let mut template = String::from("{{content}}");
         let mut stop_tokens = Vec::new();
         let mut keys = HashMap::new();
@@ -207,11 +245,35 @@ impl FromStr for Recipe {
             }
 
             else if let Some(value) = line.strip_prefix("Name ") {
-                name = Some(value.trim().to_string());
+                keys.insert(String::from("model.name"), value.trim().to_string());
+            }
+
+            else if let Some(value) = line.strip_prefix("Description ") {
+                keys.insert(String::from("model.description"), value.trim().to_string());
+            }
+
+            else if let Some(value) = line.strip_prefix("Author ") {
+                keys.insert(String::from("model.author"), value.trim().to_string());
+            }
+
+            else if let Some(value) = line.strip_prefix("License ") {
+                keys.insert(String::from("model.license"), value.trim().to_string());
             }
 
             else if let Some(value) = line.strip_prefix("Tokenizer ") {
-                tokenizer = Some(Tokenizer::from_str(value.trim())?);
+                tokenizer.make_lowercase = false;
+
+                tokenizer.num_tokens = parse_num(&value.trim_ascii().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer tokens number in model recipe"))?;
+            }
+
+            else if let Some(value) = line.strip_prefix("Lowercase ")
+                && let Some(value) = value.strip_prefix("Tokenizer ")
+            {
+                tokenizer.make_lowercase = true;
+
+                tokenizer.num_tokens = parse_num(&value.trim_ascii().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer tokens number in model recipe"))?;
             }
 
             else if let Some(value) = line.strip_prefix("Template ") {
@@ -283,10 +345,9 @@ impl FromStr for Recipe {
         }
 
         Ok(Self {
-            name: name.ok_or_else(|| anyhow::anyhow!("missing model name"))?,
             keys,
             files,
-            tokenizer: tokenizer.ok_or_else(|| anyhow::anyhow!("missing model tokenizer"))?,
+            tokenizer,
             template,
             stop_tokens,
             from_depth,
@@ -301,7 +362,6 @@ impl FromStr for Recipe {
 #[test]
 fn test_recipe() -> anyhow::Result<()> {
     let recipe = Recipe {
-        name: String::from("test recipe"),
         keys: HashMap::from_iter([
             (String::from("test"), String::from("123"))
         ]),
@@ -311,9 +371,9 @@ fn test_recipe() -> anyhow::Result<()> {
                 delimiter: String::from("</test>")
             }
         ],
-        tokenizer: Tokenizer::WordTokenizer {
-            lowercase: true,
-            punctuation: false
+        tokenizer: Tokenizer {
+            make_lowercase: true,
+            num_tokens: 1024
         },
         template: String::from("{{content}}"),
         stop_tokens: vec![

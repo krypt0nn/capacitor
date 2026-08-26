@@ -1,28 +1,48 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// capacitor
+// Copyright (C) 2025 - 2026  Nikita Podvirnyi <krypt0nn@vk.ru>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use std::cmp::Ordering;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::str::FromStr;
 use std::path::PathBuf;
 
-use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha12Rng;
 
 pub mod tokens;
-pub mod tokenizer;
 pub mod transitions;
 pub mod clustering;
 pub mod recipe;
 pub mod model;
 
 use tokens::QuantizedToken;
-use tokenizer::{Tokenizer, WordTokenizer};
-use recipe::{Recipe, Tokenizer as RecipeTokenizer};
-use model::Model;
+use recipe::Recipe;
+use model::{BuildProgress, Model};
 
 // type QuantizedModel = Model<2, u16>;
 type QuantizedModel = Model<3, QuantizedToken<3>>;
 // type QuantizedModel = Model<4, u32>;
 
-pub fn rand() -> impl RngCore {
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+pub fn get_rng() -> impl Rng {
     let micros = std::time::UNIX_EPOCH.elapsed()
         .unwrap_or_default()
         .as_micros();
@@ -71,19 +91,74 @@ fn main() -> anyhow::Result<()> {
                 recipe = recipe.relative_to(parent);
             }
 
+            let model_name = match recipe.keys.get("model.name") {
+                Some(name) => name.as_str(),
+                None => "model"
+            };
+
             let output_path = path.parent()
-                .map(|parent| parent.join(&recipe.name))
-                .unwrap_or_else(|| PathBuf::from(&recipe.name));
+                .map(|parent| parent.join(model_name))
+                .unwrap_or_else(|| PathBuf::from(model_name));
 
             println!("Building the model...");
 
-            let model = QuantizedModel::build(recipe, |curr, total| {
-                println!("Building experts {curr}/{total} ({:.2} %)...", curr as f32 / total as f32 * 100.0);
+            let model = QuantizedModel::build(recipe, |progress| {
+                match progress {
+                    BuildProgress::ReadFiles { current, total } => {
+                        println!(
+                            "Reading dataset files {current}/{total} ({:.2} %) ...",
+                            current as f32 / total as f32 * 100.0
+                        );
+                    }
+
+                    BuildProgress::PreTokenize { current, total } => {
+                        println!(
+                            "Pre-tokenizing documents ({:.2} %) ...",
+                            current as f32 / total as f32 * 100.0
+                        );
+                    }
+
+                    BuildProgress::FitTokenizer { current, total } => {
+                        println!(
+                            "Learning BPE tokens {current}/{total} ({:.2} %) ...",
+                            current as f32 / total as f32 * 100.0
+                        );
+                    }
+
+                    BuildProgress::BuildTokensMap => {
+                        println!("Build tokens map ...");
+                    }
+
+                    BuildProgress::BuildSharedTransitions => {
+                        println!("Build shared transitions table ...");
+                    }
+
+                    BuildProgress::ClusterizeDatasets => {
+                        println!("Clusterize datasets for experts ...");
+                    }
+
+                    BuildProgress::BuildExperts { current, total } => {
+                        println!(
+                            "Building experts {current}/{total} ({:.2} %) ...",
+                            current as f32 / total as f32 * 100.0
+                        );
+                    }
+
+                    BuildProgress::Done => {
+                        println!("Model built");
+                    }
+                }
             })?;
 
-            std::fs::write(&output_path, model.into_bytes())?;
+            let model = model.into_bytes();
+            let model_size = model.len();
 
-            println!("Model saved as {:?}", output_path);
+            std::fs::write(&output_path, model)?;
+
+            println!(
+                "Model saved as {output_path:?} ({:.2} MB)",
+                model_size as f32 / 1024.0 / 1024.0
+            );
         }
 
         Some("run") => {
@@ -114,47 +189,30 @@ fn main() -> anyhow::Result<()> {
 
             let model = QuantizedModel::open(std::fs::read(path)?)?;
 
-            let mut rand = rand();
-
-            #[allow(irrefutable_let_patterns)]
-            let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = model.get_tokenizer()? else {
-                anyhow::bail!("only word-tokenizer is currently supported");
-            };
-
-            let tokenizer = WordTokenizer { lowercase, punctuation };
-
             let stdin = std::io::stdin();
+
+            let mut rng = get_rng();
 
             loop {
                 stdout.write_all(b"\n\n> ")?;
                 stdout.flush()?;
 
-                let mut query = String::new();
+                let mut prefix = String::new();
 
-                stdin.read_line(&mut query)?;
+                stdin.read_line(&mut prefix)?;
 
-                let mut generator = model.generate_tokens(query.trim(), &mut rand)?;
+                let mut generator = model.generate(prefix.trim(), &mut rng)?;
 
                 if !verbose {
-                    let mut decoder = tokenizer.decode(generator);
-
-                    let mut buf = [0; 32];
-
-                    loop {
-                        let n = decoder.read(&mut buf)?;
-
-                        if n == 0 {
-                            break;
-                        }
-
-                        stdout.write_all(&buf[..n])?;
+                    for token in generator {
+                        stdout.write_all(&token)?;
                         stdout.flush()?;
                     }
                 }
 
                 else {
                     for token in &mut generator {
-                        stdout.write_all(token.as_bytes())?;
+                        stdout.write_all(&token)?;
                         stdout.write_all(b" ")?;
                         stdout.flush()?;
                     }
@@ -220,26 +278,19 @@ fn main() -> anyhow::Result<()> {
             let mut stdout = std::io::stdout();
             let stdin = std::io::stdin();
 
-            #[allow(irrefutable_let_patterns)]
-            let Some(RecipeTokenizer::WordTokenizer { lowercase, punctuation }) = model.get_tokenizer()? else {
-                anyhow::bail!("only word-tokenizer is currently supported");
-            };
-
-            let tokenizer = WordTokenizer { lowercase, punctuation };
-
             loop {
                 stdout.write_all(b"\n\n> ")?;
                 stdout.flush()?;
 
-                let mut query = String::new();
+                let mut prefix = String::new();
 
-                stdin.read_line(&mut query)?;
+                stdin.read_line(&mut prefix)?;
 
-                let query = model.encode_tokens(query.trim())?;
+                let prefix = model.tokenize(prefix.trim());
 
                 stdout.write_all(b"Query tokens:\n")?;
 
-                for token in &query {
+                for token in &prefix {
                     stdout.write_all(format!(" {token}").as_bytes())?;
                 }
 
@@ -247,23 +298,29 @@ fn main() -> anyhow::Result<()> {
                 stdout.flush()?;
 
                 let transitions = model.transitions_ref()
-                    .find_transitions(&query);
+                    .find_transitions(&prefix);
 
                 if !transitions.is_empty() {
                     stdout.write_all(b"Base model:\n")?;
                     stdout.flush()?;
 
                     for transition in transitions {
-                        let to = transition.to.iter()
+                        let mut buf = Vec::new();
+
+                        for token in transition.to.iter()
                             .flat_map(|token| {
                                 model.tokens_ref().find_word(*token)
-                            });
+                            })
+                        {
+                            buf.extend(token);
+                        }
 
-                        let mut to_str = String::new();
+                        stdout.write_all(format!(
+                            "  [{:8}] {}\n",
+                            transition.weight,
+                            String::from_utf8_lossy(&buf)
+                        ).as_bytes())?;
 
-                        tokenizer.decode(to).read_to_string(&mut to_str)?;
-
-                        stdout.write_all(format!("  [{:8}] {to_str}\n", transition.weight).as_bytes())?;
                         stdout.flush()?;
                     }
                 }
@@ -310,6 +367,8 @@ fn main() -> anyhow::Result<()> {
             println!("token,word");
 
             for (token, word) in model.tokens_ref().as_tokens_table() {
+                let word = String::from_utf8_lossy(&word);
+
                 println!("{token},\"{}\"", word.replace('"', "\\\""));
             }
         }
