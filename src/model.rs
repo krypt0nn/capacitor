@@ -843,6 +843,12 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
                     .copied()
                     .sum::<usize>();
 
+                // A cluster can contain only documents which are too short
+                // to produce any transition.
+                if total_transitions == 0 {
+                    continue;
+                }
+
                 let cluster_transitions = cluster_transitions.into_par_iter()
                     .map(|(transition, count)| {
                         let frequency = count as f32 / total_transitions as f32;

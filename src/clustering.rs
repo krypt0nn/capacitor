@@ -78,17 +78,42 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
         centroids_num = clusters_num.isqrt().max(1);
     }
 
-    if clusters_num * centroids_num > documents.len() {
+    // Pool of documents eligible for centroid sampling, referenced by their
+    // index in the input documents slice.
+    //
+    // Keep only long documents for better expert representation. Fall back to
+    // the whole corpus when there are too few long documents.
+    let mut lengths = documents.iter()
+        .map(|document| document.len())
+        .collect::<Vec<usize>>();
+
+    let median_len = if lengths.is_empty() {
+        0
+    } else {
+        let n = lengths.len();
+
+        let (_, median, _) = lengths.select_nth_unstable(n / 2);
+
+        *median
+    };
+
+    let mut remaining = documents.iter()
+        .enumerate()
+        .filter(|(_, document)| document.len() > median_len / 3)
+        .map(|(i, _)| i as u32)
+        .collect::<Vec<u32>>();
+
+    // Fall back to using all documents if there's too few long ones.
+    if clusters_num * centroids_num > remaining.len() {
+        remaining = (0..documents.len() as u32).collect();
+    }
+
+    if clusters_num * centroids_num > remaining.len() {
         anyhow::bail!("clusters_num * centroids_num must be lower or equal to the documents amount");
     }
 
-    // Prepare vector of references to the whole documents set.
-    // This is needed to be able to remove taken documents from the set.
-    //
-    // Additionally, calculate appearance frequencies for each token within
-    // all the documents.
+    // Calculate appearance frequencies for each token within all the documents.
 
-    let mut documents_set = Vec::with_capacity(documents.len());
     let mut documents_frequencies = HashMap::<&[T], HashMap<&T, f32>>::with_capacity(documents.len());
     let mut total_frequencies = HashMap::<&T, f32>::new();
     let mut total_appearances = HashMap::<&T, usize>::new();
@@ -115,11 +140,51 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
         total_tokens += document_len;
 
         documents_frequencies.insert(document.as_ref(), frequencies);
-        documents_set.push(document.as_ref());
     }
 
     for (token, count) in total_appearances.drain() {
         total_frequencies.insert(token, count as f32 / total_tokens as f32);
+    }
+
+    // Calculate similarity between the given document and the given ranks.
+
+    fn calc_similarity<T: PartialEq + Eq + std::hash::Hash>(
+        ranks: &HashMap<&T, f32>,
+        document: &[T]
+    ) -> f32 {
+        let mut similarity = 0.0;
+
+        for token in document {
+            if let Some(rank) = ranks.get(&token) {
+                similarity += *rank;
+            }
+        }
+
+        similarity
+    }
+
+    // Cumulative products of similarities to the clusters formed so far -
+    // one entry per document. Used for weighted farthest-document centroid
+    // sampling.
+
+    let mut cumulative_sims = vec![1.0_f32; documents.len()];
+
+    // Multiply similarity of every remaining document to the given ranks
+    // map into the cumulative products.
+
+    fn multiply_similarities<T: PartialEq + Eq + std::hash::Hash + Send + Sync>(
+        cumulative_sims: &mut [f32],
+        remaining: &[u32],
+        ranks: &HashMap<&T, f32>,
+        documents: &[Box<[T]>]
+    ) {
+        let sims = remaining.par_iter()
+            .map(|&id| calc_similarity(ranks, &documents[id as usize]))
+            .collect::<Vec<f32>>();
+
+        for (&id, sim) in remaining.iter().zip(sims) {
+            cumulative_sims[id as usize] *= sim;
+        }
     }
 
     // Initial cluster population.
@@ -128,9 +193,11 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
     let mut cluster = Vec::with_capacity(centroids_num);
 
     for _ in 0..centroids_num {
-        let document = documents_set.swap_remove(rng.next_u64() as usize % documents_set.len());
+        let index = rng.next_u64() as usize % remaining.len();
 
-        cluster.push(document);
+        cluster.push(documents[remaining[index] as usize].as_ref());
+
+        remaining.swap_remove(index);
     }
 
     clusters.push(cluster);
@@ -180,116 +247,97 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
         &documents_frequencies
     ));
 
-    // Calculate similarities from the initial cluster to all the other documents.
+    // Account the initial cluster in cumulative similarities.
 
-    fn calc_similarity<T: PartialEq + Eq + std::hash::Hash>(
-        ranks: &HashMap<&T, f32>,
-        document: &[T]
-    ) -> f32 {
-        let mut similarity = 0.0;
-
-        for token in document {
-            if let Some(rank) = ranks.get(&token) {
-                similarity += *rank;
-            }
-        }
-
-        similarity
+    if clusters_num > 1 {
+        multiply_similarities(
+            &mut cumulative_sims,
+            &remaining,
+            &ranks[0],
+            documents
+        );
     }
-
-    let mut clusters_similarities = Vec::with_capacity(clusters_num);
-    let mut similarities = HashMap::<&[T], f32>::with_capacity(documents.len());
-
-    for document in &clusters[0] {
-        similarities.insert(document, calc_similarity(&ranks[0], document));
-    }
-
-    clusters_similarities.push(similarities);
 
     // Populate other clusters.
 
     for i in 1..clusters_num {
-        // Calculate cummulative similarity from all the existing clusters to all
-        // the documents as geometric mean of all the known similarities.
+        // Weight of every remaining document is an inverse geometric mean of
+        // its cumulative similarity products. Rare (dissimilar) documents get
+        // higher weights and thus are more likely to be chosen as centroids.
 
-        let mut cummulative_similarities = documents_set.par_iter()
-            .map(|document| {
-                let mut cummulative_similarity = 1.0;
+        let weights = remaining.par_iter()
+            .map(|&id| 1.0 / cumulative_sims[id as usize].powf(1.0 / i as f32))
+            .collect::<Vec<f32>>();
 
-                for j in 0..i {
-                    cummulative_similarity *= clusters_similarities[j].get(document)
-                        .copied()
-                        .unwrap_or(1.0);
-                }
-
-                cummulative_similarity = 1.0 / cummulative_similarity.powf(1.0 / i as f32);
-
-                (document, cummulative_similarity)
-            })
-            .collect::<Vec<_>>();
-
-        let mut total_similarity = cummulative_similarities.par_iter()
-            .map(|(_, similarity)| *similarity)
+        let mut total_weight = weights.par_iter()
             .sum::<f32>();
 
-        // Sort similarities in descending order. We will generate
-        // `centroids_num` random floats from 0.0 to `total_distance` and
-        // iterating over the sorted `cummulative_distances` vector choose
-        // farthest documents.
+        // Sample `centroids_num` documents proportionally to their weights.
 
-        cummulative_similarities.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal)
-        });
-
-        let mut cluster = HashSet::<&[T]>::with_capacity(centroids_num);
+        let mut cluster = HashSet::<u32>::with_capacity(centroids_num);
 
         for _ in 0..centroids_num {
-            let mut curr_distance = 0.0;
-            let cutoff = rng.next_u32() as f32 / u32::MAX as f32 * total_similarity;
+            if total_weight <= 0.0 {
+                break;
+            }
 
-            for (document, similarity) in &cummulative_similarities {
-                if cluster.contains(*document) {
+            let cutoff = rng.next_u32() as f32 / u32::MAX as f32 * total_weight;
+
+            let mut curr_weight = 0.0;
+            let mut chosen = None;
+
+            for (weight_index, &id) in remaining.iter().enumerate() {
+                if cluster.contains(&id) {
                     continue;
                 }
 
-                curr_distance += similarity;
+                curr_weight += weights[weight_index];
 
-                if cutoff <= curr_distance {
-                    total_similarity -= similarity;
-
-                    cluster.insert(document);
+                if cutoff <= curr_weight {
+                    chosen = Some(weight_index);
 
                     break;
                 }
             }
+
+            let Some(weight_index) = chosen else {
+                break;
+            };
+
+            let id = remaining[weight_index];
+
+            total_weight -= weights[weight_index];
+
+            cluster.insert(id);
         }
 
-        // If it happened that we lack some documents in the cluster - manually
-        // fill them from the farthest list. This normally will never happen
-        // but presented just in case.
+        // If it happened that we lack some documents in the cluster - fill it
+        // with the least similar ones (documents with the highest weight).
+        // This normally will never happen but presented just in case.
 
-        let mut k = 0;
-        let n = cummulative_similarities.len();
+        while cluster.len() < centroids_num && cluster.len() < remaining.len() {
+            let Some((_, &id)) = remaining.iter()
+                .enumerate()
+                .filter(|(_, id)| !cluster.contains(*id))
+                .max_by(|a, b| {
+                    weights[a.0]
+                        .partial_cmp(&weights[b.0])
+                        .unwrap_or(Ordering::Equal)
+                })
+            else {
+                break;
+            };
 
-        // i < n just in case but it shouldn't be needed here.
-        while cluster.len() < centroids_num && k < n {
-            cluster.insert(cummulative_similarities[k].0);
-
-            k += 1;
+            cluster.insert(id);
         }
 
-        // Remove all the taken documents from the documents set.
-        for document in &cluster {
-            for i in 0..documents_set.len() {
-                if &documents_set[i] == document {
-                    documents_set.swap_remove(i);
+        // Remove all the taken documents from the pool.
 
-                    break;
-                }
-            }
-        }
+        remaining.retain(|id| !cluster.contains(id));
 
-        clusters.push(cluster.into_iter().collect());
+        clusters.push(cluster.into_iter()
+            .map(|index| documents[index as usize].as_ref())
+            .collect::<Vec<&[T]>>());
 
         // Calculate tokens ranks in the newly formed cluster.
 
@@ -299,15 +347,17 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
             &documents_frequencies
         ));
 
-        // Calculate similarities for newly formed cluster.
+        // Account the new cluster in cumulative similarities for all the
+        // future rounds.
 
-        let mut similarities = HashMap::<&[T], f32>::with_capacity(documents.len());
-
-        for document in &clusters[i] {
-            similarities.insert(document, calc_similarity(&ranks[i], document));
+        if i + 1 < clusters_num {
+            multiply_similarities(
+                &mut cumulative_sims,
+                &remaining,
+                &ranks[i],
+                documents
+            );
         }
-
-        clusters_similarities.push(similarities);
     }
 
     // Prepare clusters output.
