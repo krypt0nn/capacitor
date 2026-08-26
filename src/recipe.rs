@@ -24,20 +24,20 @@ use anyhow::Context;
 
 fn parse_num(value: &str) -> Option<usize> {
     if let Some(value) = value.strip_suffix("g") {
-        value.parse::<usize>()
-            .map(|value| value * 1024 * 1024 * 1024)
+        value.parse::<f32>()
+            .map(|value| (value * 1024.0 * 1024.0 * 1024.0).ceil() as usize)
             .ok()
     }
 
     else if let Some(value) = value.strip_suffix("m") {
-        value.parse::<usize>()
-            .map(|value| value * 1024 * 1024)
+        value.parse::<f32>()
+            .map(|value| (value * 1024.0 * 1024.0).ceil() as usize)
             .ok()
     }
 
     else if let Some(value) = value.strip_suffix("k") {
-        value.parse::<usize>()
-            .map(|value| value * 1024)
+        value.parse::<f32>()
+            .map(|value| (value * 1024.0).ceil() as usize)
             .ok()
     }
 
