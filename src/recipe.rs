@@ -61,7 +61,12 @@ pub struct Tokenizer {
     pub make_lowercase: bool,
 
     /// How many tokens BPE tokenizer should learn.
-    pub num_tokens: usize
+    pub num_tokens: usize,
+
+    /// How many pre-tokenized words will be used to train the BPE tokenizer.
+    /// Higher value will produce better quality tokens in cost of increased
+    /// build time.
+    pub num_samples: usize
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +128,8 @@ impl Default for Recipe {
             files: Vec::new(),
             tokenizer: Tokenizer {
                 make_lowercase: false,
-                num_tokens: 1024
+                num_tokens: 256,
+                num_samples: 8192
             },
             template: String::from("{{content}}"),
             stop_tokens: vec![
@@ -227,7 +233,8 @@ impl FromStr for Recipe {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut tokenizer = Tokenizer {
             make_lowercase: false,
-            num_tokens: 1024
+            num_tokens: 256,
+            num_samples: 8192
         };
         let mut template = String::from("{{content}}");
         let mut stop_tokens = Vec::new();
@@ -261,19 +268,31 @@ impl FromStr for Recipe {
             }
 
             else if let Some(value) = line.strip_prefix("Tokenizer ") {
+                let (num_tokens, num_samples) = value.split_once('/')
+                    .ok_or_else(|| anyhow::anyhow!("invalid tokenizer syntax"))?;
+
                 tokenizer.make_lowercase = false;
 
-                tokenizer.num_tokens = parse_num(&value.trim_ascii().to_ascii_lowercase())
+                tokenizer.num_tokens = parse_num(&num_tokens.trim_ascii().to_ascii_lowercase())
                     .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer tokens number in model recipe"))?;
+
+                tokenizer.num_samples = parse_num(&num_samples.trim_ascii().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer samples number in model recipe"))?;
             }
 
             else if let Some(value) = line.strip_prefix("Lowercase ")
                 && let Some(value) = value.strip_prefix("Tokenizer ")
             {
+                let (num_tokens, num_samples) = value.split_once('/')
+                    .ok_or_else(|| anyhow::anyhow!("invalid tokenizer syntax"))?;
+
                 tokenizer.make_lowercase = true;
 
-                tokenizer.num_tokens = parse_num(&value.trim_ascii().to_ascii_lowercase())
+                tokenizer.num_tokens = parse_num(&num_tokens.trim_ascii().to_ascii_lowercase())
                     .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer tokens number in model recipe"))?;
+
+                tokenizer.num_samples = parse_num(&num_samples.trim_ascii().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer samples number in model recipe"))?;
             }
 
             else if let Some(value) = line.strip_prefix("Template ") {
@@ -373,7 +392,8 @@ fn test_recipe() -> anyhow::Result<()> {
         ],
         tokenizer: Tokenizer {
             make_lowercase: true,
-            num_tokens: 1024
+            num_tokens: 256,
+            num_samples: 8192
         },
         template: String::from("{{content}}"),
         stop_tokens: vec![

@@ -358,11 +358,6 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         tokens.insert(Self::START_TOKEN.to_string());
         tokens.insert(Self::STOP_TOKEN.to_string());
 
-        // for c in 0..128_u8 {
-        //     // Standard ASCII characters.
-        //     tokens.insert((c as char).to_string());
-        // }
-
         // Pre-tokenize input documents.
         let total = documents.iter()
             .map(|document| document.len() as u64)
@@ -444,6 +439,22 @@ impl<const SIZE: usize, T: Token<SIZE>> Model<SIZE, T> {
         });
 
         while tokens.len() < recipe.tokenizer.num_tokens {
+            // Take small part of the tokenized documents to speed-up BPE model
+            // building.
+            let mut taken_samples = 0;
+
+            let pre_tokenized_documents = pre_tokenized_documents.iter()
+                .filter(|document| {
+                    if taken_samples > recipe.tokenizer.num_samples {
+                        return false;
+                    }
+
+                    taken_samples += document.len();
+
+                    true
+                })
+                .collect::<Box<[_]>>();
+
             // Find already learned multi-character tokens.
             let tokenized_documents = pre_tokenized_documents.par_iter()
                 .map(|pre_tokenized_document| {
