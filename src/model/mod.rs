@@ -75,6 +75,7 @@ impl Model {
     pub const STOP_TOKEN: &str = "<|stop|>";
 
     pub const DEFAULT_TOP_K: usize = 10;
+    pub const DEFAULT_TEMPERATURE: f32 = 1.0;
     pub const DEFAULT_MAX_TOKENS: usize = 200;
     pub const DEFAULT_EXPERTS_CONTEXT: usize = 32;
 

@@ -19,6 +19,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::iter::FusedIterator;
+use std::io::{Read, Write};
 
 use rand_chacha::rand_core::Rng;
 
@@ -63,6 +64,15 @@ pub struct TokensGenerator<'model, R: Rng> {
 
     /// Amount of best match token to randomly choose from.
     top_k: usize,
+
+    /// Exponent applied to candidate weights before sampling via
+    /// `weight^(1 / temperature)`.
+    ///
+    /// Values above `1.0` flatten the distribution. Values below `1.0` sharpen
+    /// it toward the greedy choice.
+    ///
+    /// `1.0` samples proportionally to weights.
+    temperature: f32,
 
     /// Maximal amount of tokens to generate.
     max_tokens: usize,
@@ -130,7 +140,13 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
 
         let top_k = model.keys.get("model.inference.top_k")
             .map(|value| value.parse::<usize>())
-            .unwrap_or(Ok(Model::DEFAULT_TOP_K))?;
+            .unwrap_or(Ok(Model::DEFAULT_TOP_K))?
+            .max(1);
+
+        let temperature = model.keys.get("model.inference.temperature")
+            .map(|value| value.parse::<f32>())
+            .unwrap_or(Ok(Model::DEFAULT_TEMPERATURE))
+            .map(|value| if value > 0.0 { value } else { 1.0 })?;
 
         let max_tokens = model.keys.get("model.inference.max_tokens")
             .map(|value| value.parse::<usize>())
@@ -156,6 +172,7 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
             stop_tokens,
             active_experts,
             top_k,
+            temperature,
             max_tokens,
             experts_context
         })
@@ -175,6 +192,8 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
             return None;
         }
 
+        // Emit buffered tokens of the previous transition as is, without any
+        // lookups or randomness.
         if let Some(token) = self.sequence.get(self.sequence_ptr + 1) {
             self.sequence_ptr += 1;
 
@@ -191,10 +210,10 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
 
         // Find best experts for the current tokens stream.
         //
-        // Similarities are scored over a bounded recent window of the
-        // sequence, not over its whole history - occurrence-summed ranks of
-        // ever-growing contexts ossify routing onto whatever topic dominated
-        // long ago and drown out the current one.
+        // Similarities are scored over a bounded recent window of the sequence,
+        // not over its whole history - occurrence-summed ranks of ever-growing
+        // contexts ossify routing onto whatever topic dominated long ago and
+        // drown out the current one.
 
         let total_experts = self.model.experts.len();
 
@@ -287,7 +306,7 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
         if transitions.len() == 1 {
             let to = &transitions[0].1;
 
-            self.sequence.extend_from_slice(to);
+            self.sequence.extend(to);
             self.sequence_ptr += 1;
 
             let token = self.model.tokens.find_word(to[0])?;
@@ -315,20 +334,29 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
             })
             .collect::<Vec<_>>();
 
-        let mut transitions = HashMap::<(Box<[u16]>, Box<[u16]>), f64>::with_capacity(
-            raw_transitions.len()
-        );
+        // Sum duplicate pairs and apply the temperature. BTreeMap keeps the
+        // summation and iteration order deterministic - HashSet iteration is
+        // randomized per process, which would leak into tie-breaks below.
+
+        let mut candidates = std::collections::BTreeMap::<(Box<[u16]>, Box<[u16]>), f64>::new();
+
+        let temperature_pow = 1.0 / self.temperature as f64;
 
         for (from, to, weight) in raw_transitions {
-            *transitions.entry((from, to)).or_default() += weight;
+            *candidates.entry((from, to))
+                .or_default() += weight.powf(temperature_pow);
         }
 
-        let mut transitions = transitions.into_iter()
+        let mut transitions = candidates.into_iter()
             .map(|(k, v)| (k.0, k.1, v))
             .collect::<Vec<_>>();
 
         transitions.sort_by(|a, b| {
+            // Deterministic tie-break: lexicographic by (from, to) instead
+            // of randomized HashMap order.
             b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+                .then_with(|| a.1.cmp(&b.1))
         });
 
         transitions.truncate(self.top_k);
@@ -347,7 +375,7 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
             curr_weight += *weight;
 
             if curr_weight >= target_weight {
-                self.sequence.extend_from_slice(to);
+                self.sequence.extend(to);
                 self.sequence_ptr += 1;
 
                 let token = self.model.tokens.find_word(to[0])?;
@@ -362,7 +390,7 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
             }
         }
 
-        self.sequence.extend_from_slice(&transitions[0].1);
+        self.sequence.extend(&transitions[0].1);
         self.sequence_ptr += 1;
 
         let token = self.model.tokens.find_word(transitions[0].1[0])?;
@@ -378,3 +406,15 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
 }
 
 impl<R: Rng> FusedIterator for TokensGenerator<'_, R> {}
+
+impl<R: Rng> Read for TokensGenerator<'_, R> {
+    fn read(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(token) = self.next() else {
+            return Ok(0);
+        };
+
+        buf.write_all(&token)?;
+
+        Ok(token.len())
+    }
+}

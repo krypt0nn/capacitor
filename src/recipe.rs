@@ -415,7 +415,11 @@ impl FromStr for Recipe {
             }
 
             else if let Some(value) = line.strip_prefix("Stop ") {
-                recipe.stop_tokens.push(value.trim().to_string());
+                let word = value.trim().to_string();
+
+                if !recipe.stop_tokens.contains(&word) {
+                    recipe.stop_tokens.push(word);
+                }
             }
 
             else if let Some(value) = line.strip_prefix("Set ") {
@@ -496,6 +500,8 @@ fn test_recipe() -> anyhow::Result<()> {
         },
         template: String::from("{{content}}"),
         stop_tokens: vec![
+            String::from("<|start|>"),
+            String::from("<|stop|>"),
             String::from("<|document|>")
         ],
         files: vec![
