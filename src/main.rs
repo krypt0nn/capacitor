@@ -199,7 +199,10 @@ fn main() -> anyhow::Result<()> {
                 let mut generator = model.generate(prefix.trim(), &mut rng)?;
 
                 if !verbose {
-                    std::io::copy(&mut generator, &mut stdout)?;
+                    for token in generator {
+                        stdout.write_all(token.as_ref())?;
+                        stdout.flush()?;
+                    }
                 }
 
                 else {
