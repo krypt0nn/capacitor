@@ -675,9 +675,6 @@ pub fn build(
     recipe.keys.entry(String::from("model.experts.centroids"))
         .or_insert(recipe.experts.num_centroids.to_string());
 
-    recipe.keys.entry(String::from("model.experts.context"))
-        .or_insert(recipe.experts.num_context.to_string());
-
     // Model inference params.
     recipe.keys.entry(String::from("model.inference.template"))
         .or_insert(recipe.template);
@@ -690,6 +687,9 @@ pub fn build(
     recipe.keys.entry(String::from("model.inference.top_k"))
         .or_insert(Model::DEFAULT_TOP_K.to_string());
 
+    recipe.keys.entry(String::from("model.inference.temperature"))
+        .or_insert(Model::DEFAULT_TEMPERATURE.to_string());
+
     recipe.keys.entry(String::from("model.inference.max_tokens"))
         .or_insert(Model::DEFAULT_MAX_TOKENS.to_string());
 
@@ -697,7 +697,7 @@ pub fn build(
         .or_insert(recipe.experts.num_active.to_string());
 
     recipe.keys.entry(String::from("model.inference.experts_context"))
-        .or_insert(recipe.experts.num_context.to_string());
+        .or_insert(Model::DEFAULT_EXPERTS_CONTEXT.to_string());
 
     // Build the model.
 

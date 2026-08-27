@@ -132,12 +132,7 @@ pub struct Experts {
     /// model build time to determine its profile.
     ///
     /// Default: `4`
-    pub num_centroids: usize,
-
-    /// Amount of last context tokens used to select active experts.
-    ///
-    /// Default: `32`
-    pub num_context: usize
+    pub num_centroids: usize
 }
 
 impl Default for Experts {
@@ -145,8 +140,7 @@ impl Default for Experts {
         Self {
             num_active: 0,
             num_total: 0,
-            num_centroids: 4,
-            num_context: 32
+            num_centroids: 4
         }
     }
 }
@@ -273,7 +267,6 @@ impl std::fmt::Display for Recipe {
         lines.push(format!("Depth {}/{}", self.ngrams.num_from, self.ngrams.num_to));
         lines.push(format!("Experts {}/{}", self.experts.num_active, self.experts.num_total));
         lines.push(format!("Centroids {}", self.experts.num_centroids));
-        lines.push(format!("Context {}", self.experts.num_context));
 
         lines.push(String::new());
         lines.push(format!("Template {}", self.template));
@@ -405,11 +398,6 @@ impl FromStr for Recipe {
                     .with_context(|| format!("invalid centroids format: {line}"))?;
             }
 
-            else if let Some(value) = line.strip_prefix("Context ") {
-                recipe.experts.num_context = value.parse()
-                    .with_context(|| format!("invalid context format: {line}"))?;
-            }
-
             else if let Some(value) = line.strip_prefix("Template ") {
                 recipe.template = value.trim().to_string();
             }
@@ -495,8 +483,7 @@ fn test_recipe() -> anyhow::Result<()> {
         experts: Experts {
             num_active: 4,
             num_total: 64,
-            num_centroids: 4,
-            num_context: 16
+            num_centroids: 4
         },
         template: String::from("{{content}}"),
         stop_tokens: vec![

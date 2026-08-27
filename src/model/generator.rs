@@ -133,11 +133,6 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
 
         // Parse inference parameters.
 
-        let active_experts = model.keys.get("model.inference.active_experts")
-            .or_else(|| model.keys.get("model.experts.active"))
-            .map(|value| value.parse::<usize>())
-            .unwrap_or(Ok(0))?;
-
         let top_k = model.keys.get("model.inference.top_k")
             .map(|value| value.parse::<usize>())
             .unwrap_or(Ok(Model::DEFAULT_TOP_K))?
@@ -151,6 +146,11 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
         let max_tokens = model.keys.get("model.inference.max_tokens")
             .map(|value| value.parse::<usize>())
             .unwrap_or(Ok(Model::DEFAULT_MAX_TOKENS))?;
+
+        let active_experts = model.keys.get("model.inference.active_experts")
+            .or_else(|| model.keys.get("model.experts.active"))
+            .map(|value| value.parse::<usize>())
+            .unwrap_or(Ok(0))?;
 
         let experts_context = model.keys.get("model.inference.experts_context")
             .or_else(|| model.keys.get("model.experts.context"))
