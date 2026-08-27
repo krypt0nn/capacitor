@@ -639,6 +639,7 @@ pub fn build(
 
     // Prefill default metadata keys.
 
+    // Model tokenizer.
     recipe.keys.entry(String::from("model.tokenizer.make_lowercase"))
         .or_insert({
             if recipe.tokenizer.make_lowercase {
@@ -651,6 +652,7 @@ pub fn build(
     recipe.keys.entry(String::from("model.tokenizer.num_tokens"))
         .or_insert(recipe.tokenizer.num_tokens.to_string());
 
+    // Model tokens (ngrams).
     recipe.keys.entry(String::from("model.tokens.from_depth"))
         .or_insert(recipe.ngrams.num_from.to_string());
 
@@ -663,11 +665,12 @@ pub fn build(
     recipe.keys.entry(String::from("model.tokens.stop_token"))
         .or_insert(Model::STOP_TOKEN.to_string());
 
-    recipe.keys.entry(String::from("model.experts.total"))
-        .or_insert(experts.len().to_string());
-
+    // Model experts.
     recipe.keys.entry(String::from("model.experts.active"))
         .or_insert(recipe.experts.num_active.to_string());
+
+    recipe.keys.entry(String::from("model.experts.total"))
+        .or_insert(experts.len().to_string());
 
     recipe.keys.entry(String::from("model.experts.centroids"))
         .or_insert(recipe.experts.num_centroids.to_string());
@@ -675,6 +678,7 @@ pub fn build(
     recipe.keys.entry(String::from("model.experts.context"))
         .or_insert(recipe.experts.num_context.to_string());
 
+    // Model inference params.
     recipe.keys.entry(String::from("model.inference.template"))
         .or_insert(recipe.template);
 
@@ -688,6 +692,12 @@ pub fn build(
 
     recipe.keys.entry(String::from("model.inference.max_tokens"))
         .or_insert(Model::DEFAULT_MAX_TOKENS.to_string());
+
+    recipe.keys.entry(String::from("model.inference.active_experts"))
+        .or_insert(recipe.experts.num_active.to_string());
+
+    recipe.keys.entry(String::from("model.inference.experts_context"))
+        .or_insert(recipe.experts.num_context.to_string());
 
     // Build the model.
 

@@ -76,6 +76,7 @@ impl Model {
 
     pub const DEFAULT_TOP_K: usize = 10;
     pub const DEFAULT_MAX_TOKENS: usize = 200;
+    pub const DEFAULT_EXPERTS_CONTEXT: usize = 32;
 
     pub fn open(model: impl AsRef<[u8]>) -> anyhow::Result<Self> {
         let model = model.as_ref();

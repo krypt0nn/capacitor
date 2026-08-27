@@ -65,7 +65,10 @@ pub struct TokensGenerator<'model, R: Rng> {
     top_k: usize,
 
     /// Maximal amount of tokens to generate.
-    max_tokens: usize
+    max_tokens: usize,
+
+    /// Amount of context tokens to use for experts selection.
+    experts_context: usize
 }
 
 impl<'model, R: Rng> TokensGenerator<'model, R> {
@@ -120,17 +123,23 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
 
         // Parse inference parameters.
 
-        let active_experts = model.keys.get("model.experts.active")
+        let active_experts = model.keys.get("model.inference.active_experts")
+            .or_else(|| model.keys.get("model.experts.active"))
             .map(|value| value.parse::<usize>())
             .unwrap_or(Ok(0))?;
 
         let top_k = model.keys.get("model.inference.top_k")
             .map(|value| value.parse::<usize>())
-            .unwrap_or(Ok(10))?;
+            .unwrap_or(Ok(Model::DEFAULT_TOP_K))?;
 
         let max_tokens = model.keys.get("model.inference.max_tokens")
             .map(|value| value.parse::<usize>())
-            .unwrap_or(Ok(1024))?;
+            .unwrap_or(Ok(Model::DEFAULT_MAX_TOKENS))?;
+
+        let experts_context = model.keys.get("model.inference.experts_context")
+            .or_else(|| model.keys.get("model.experts.context"))
+            .map(|value| value.parse::<usize>())
+            .unwrap_or(Ok(Model::DEFAULT_EXPERTS_CONTEXT))?;
 
         Ok(TokensGenerator {
             model,
@@ -147,7 +156,8 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
             stop_tokens,
             active_experts,
             top_k,
-            max_tokens
+            max_tokens,
+            experts_context
         })
     }
 
@@ -186,12 +196,11 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
         // ever-growing contexts ossify routing onto whatever topic dominated
         // long ago and drown out the current one.
 
-        const EXPERT_CONTEXT_WINDOW: usize = 32;
-
         let total_experts = self.model.experts.len();
 
-        let experts_context = &self.sequence
-            [self.sequence.len().saturating_sub(EXPERT_CONTEXT_WINDOW)..];
+        let experts_context = &self.sequence[
+            self.sequence.len().saturating_sub(self.experts_context)..
+        ];
 
         let mut experts = Vec::with_capacity(total_experts);
 

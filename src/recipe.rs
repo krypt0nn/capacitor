@@ -273,6 +273,7 @@ impl std::fmt::Display for Recipe {
         lines.push(format!("Depth {}/{}", self.ngrams.num_from, self.ngrams.num_to));
         lines.push(format!("Experts {}/{}", self.experts.num_active, self.experts.num_total));
         lines.push(format!("Centroids {}", self.experts.num_centroids));
+        lines.push(format!("Context {}", self.experts.num_context));
 
         lines.push(String::new());
         lines.push(format!("Template {}", self.template));
@@ -402,6 +403,11 @@ impl FromStr for Recipe {
             else if let Some(value) = line.strip_prefix("Centroids ") {
                 recipe.experts.num_centroids = value.parse()
                     .with_context(|| format!("invalid centroids format: {line}"))?;
+            }
+
+            else if let Some(value) = line.strip_prefix("Context ") {
+                recipe.experts.num_context = value.parse()
+                    .with_context(|| format!("invalid context format: {line}"))?;
             }
 
             else if let Some(value) = line.strip_prefix("Template ") {
