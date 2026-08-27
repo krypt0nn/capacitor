@@ -337,6 +337,8 @@ impl Model {
             };
 
             text.push(token);
+
+            i += 1;
         }
 
         // Tokenize the text.
