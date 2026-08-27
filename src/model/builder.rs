@@ -291,10 +291,17 @@ pub fn build(
             if recipe.tokenizer.force_alphanumeric
                 && document[i].is_whitespace()
             {
+                // Skip current character if previous one is whitespace too.
+                if i > 0 && document[i - 1] == ' ' {
+                    i += 1;
+
+                    continue;
+                }
+
                 document[i] = ' ';
             }
 
-            // Convert characters to lowercase.
+            // Convert character to lowercase.
             let token = if recipe.tokenizer.make_lowercase {
                 document[i].to_lowercase().collect::<String>()
             } else {

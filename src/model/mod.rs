@@ -298,28 +298,46 @@ impl Model {
             .unwrap_or("false") == "true";
 
         // Pre-tokenize given text.
-        let text = text.as_ref();
+        let mut raw_text = text.as_ref()
+            .chars()
+            .collect::<Box<[char]>>();
 
-        let text = text.chars()
-            .filter(|c| {
-                if !force_alphanumeric {
-                    true
-                } else {
-                    c.is_alphanumeric() || c.is_whitespace()
-                }
-            })
-            .map(|mut c| {
-                if force_alphanumeric && c.is_whitespace() {
-                    c = ' ';
+        let n = raw_text.len();
+
+        let mut text = Vec::with_capacity(n);
+        let mut i = 0;
+
+        while i < n {
+            // Skip non-alpha-numeric / whitespace characters.
+            if force_alphanumeric
+                && !(raw_text[i].is_alphanumeric() || raw_text[i].is_whitespace())
+            {
+                i += 1;
+
+                continue;
+            }
+
+            // Replace whitespace characters to spaces.
+            if force_alphanumeric && raw_text[i].is_whitespace() {
+                // Skip current character if previous one is whitespace too.
+                if i > 0 && raw_text[i - 1] == ' ' {
+                    i += 1;
+
+                    continue;
                 }
 
-                if make_lowercase {
-                    c.to_lowercase().to_string()
-                } else {
-                    c.to_string()
-                }
-            })
-            .collect::<Box<[String]>>();
+                raw_text[i] = ' ';
+            }
+
+            // Convert character to lowercase.
+            let token = if make_lowercase {
+                raw_text[i].to_lowercase().collect::<String>()
+            } else {
+                raw_text[i].to_string()
+            };
+
+            text.push(token);
+        }
 
         // Tokenize the text.
         let n = text.len();
