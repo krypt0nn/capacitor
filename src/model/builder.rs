@@ -128,7 +128,20 @@ pub fn build(
         });
     }
 
-    // Fit tokenizer on documents.
+    // Bail out before any tokenization work when the requested experts layout
+    // can't possibly fit into the corpus. The clusterize() check against its
+    // filtered document pool happens later and is stricter.
+    if recipe.experts.num_total > 0 {
+        let centroids_num = if recipe.experts.num_centroids == 0 {
+            recipe.experts.num_total.isqrt().max(1)
+        } else {
+            recipe.experts.num_centroids
+        };
+
+        if clusters_num * centroids_num > documents.len() {
+            anyhow::bail!("clusters_num * centroids_num must be lower or equal to the documents amount");
+        }
+    }
 
     // Prefill tokenizer with some standard tokens.
 
