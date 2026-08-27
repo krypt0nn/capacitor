@@ -288,8 +288,12 @@ impl Model {
         &self,
         text: impl AsRef<str>
     ) -> Box<[u16]> {
-        // Look if we need to convert input text to lowercase.
+        // Lookup tokenizer settings.
         let make_lowercase = self.keys.get("model.tokenizer.make_lowercase")
+            .map(|value| value.as_str())
+            .unwrap_or("false") == "true";
+
+        let force_alphanumeric = self.keys.get("model.tokenizer.force_alphanumeric")
             .map(|value| value.as_str())
             .unwrap_or("false") == "true";
 
@@ -297,7 +301,18 @@ impl Model {
         let text = text.as_ref();
 
         let text = text.chars()
-            .map(|c| {
+            .filter(|c| {
+                if !force_alphanumeric {
+                    true
+                } else {
+                    c.is_alphanumeric() || c.is_whitespace()
+                }
+            })
+            .map(|mut c| {
+                if force_alphanumeric && c.is_whitespace() {
+                    c = ' ';
+                }
+
                 if make_lowercase {
                     c.to_lowercase().to_string()
                 } else {

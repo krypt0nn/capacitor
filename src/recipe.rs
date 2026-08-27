@@ -67,6 +67,11 @@ pub struct Tokenizer {
     /// Default: `false`
     pub make_lowercase: bool,
 
+    /// Keep only alpha-numeric characters.
+    ///
+    /// Default: `false`
+    pub force_alphanumeric: bool,
+
     /// How many tokens BPE tokenizer should learn.
     ///
     /// Default: `1024`
@@ -84,6 +89,7 @@ impl Default for Tokenizer {
     fn default() -> Self {
         Self {
             make_lowercase: false,
+            force_alphanumeric: false,
             num_tokens: 1024,
             num_samples: 256 * 1024 * 1024
         }
@@ -258,8 +264,9 @@ impl std::fmt::Display for Recipe {
         }
 
         lines.push(format!(
-            "{}Tokenizer {}/{}",
+            "{}{}Tokenizer {}/{}",
             if self.tokenizer.make_lowercase { "Lowercase " } else { "" },
+            if self.tokenizer.force_alphanumeric { "Alphanumeric " } else { "" },
             self.tokenizer.num_tokens,
             self.tokenizer.num_samples
         ));
@@ -348,9 +355,17 @@ impl FromStr for Recipe {
                     .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer samples number in model recipe"))?;
             }
 
-            else if let Some(value) = line.strip_prefix("Lowercase ")
-                && let Some(value) = value.strip_prefix("Tokenizer ")
-            {
+            else if let Some(mut value) = line.strip_prefix("Lowercase ") {
+                if let Some(new_value) = value.strip_prefix("Alphanumeric ") {
+                    recipe.tokenizer.force_alphanumeric = true;
+
+                    value = new_value;
+                }
+
+                let Some(value) = value.strip_prefix("Tokenizer ") else {
+                    anyhow::bail!("invalid tokenizer syntax: {line}");
+                };
+
                 let (num_tokens, num_samples) = value.split_once('/')
                     .ok_or_else(|| anyhow::anyhow!("invalid tokenizer syntax"))?;
 
@@ -362,6 +377,35 @@ impl FromStr for Recipe {
                 }
 
                 recipe.tokenizer.make_lowercase = true;
+
+                recipe.tokenizer.num_tokens = num_tokens as u16;
+
+                recipe.tokenizer.num_samples = parse_num(&num_samples.trim().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer samples number in model recipe"))?;
+            }
+
+            else if let Some(mut value) = line.strip_prefix("Alphanumeric ") {
+                if let Some(new_value) = value.strip_prefix("Lowercase ") {
+                    recipe.tokenizer.make_lowercase = true;
+
+                    value = new_value;
+                }
+
+                let Some(value) = value.strip_prefix("Tokenizer ") else {
+                    anyhow::bail!("invalid tokenizer syntax: {line}");
+                };
+
+                let (num_tokens, num_samples) = value.split_once('/')
+                    .ok_or_else(|| anyhow::anyhow!("invalid tokenizer syntax"))?;
+
+                let num_tokens = parse_num(&num_tokens.trim().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow::anyhow!("failed to parse tokenizer tokens number in model recipe"))?;
+
+                if num_tokens > u16::MAX as usize {
+                    anyhow::bail!("BPE tokenizer cannot have more than 65535 tokens");
+                }
+
+                recipe.tokenizer.force_alphanumeric = true;
 
                 recipe.tokenizer.num_tokens = num_tokens as u16;
 
@@ -473,6 +517,7 @@ fn test_recipe() -> anyhow::Result<()> {
         ]),
         tokenizer: Tokenizer {
             make_lowercase: true,
+            force_alphanumeric: true,
             num_tokens: 1024,
             num_samples: 256 * 1024 * 1024
         },

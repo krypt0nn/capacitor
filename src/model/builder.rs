@@ -138,7 +138,7 @@ pub fn build(
             recipe.experts.num_centroids
         };
 
-        if clusters_num * centroids_num > documents.len() {
+        if recipe.experts.num_total * centroids_num > documents.len() {
             anyhow::bail!("clusters_num * centroids_num must be lower or equal to the documents amount");
         }
     }
@@ -234,7 +234,8 @@ pub fn build(
     for document in &documents {
         current += document.len() as u64;
 
-        let document = document.chars().collect::<Box<[char]>>();
+        let mut document = document.chars()
+            .collect::<Box<[char]>>();
 
         let n = document.len();
         let mut i = 0;
@@ -277,6 +278,23 @@ pub fn build(
                 }
             }
 
+            // Skip non-alpha-numeric / whitespace characters.
+            if recipe.tokenizer.force_alphanumeric
+                && !(document[i].is_alphanumeric() || document[i].is_whitespace())
+            {
+                i += 1;
+
+                continue;
+            }
+
+            // Replace whitespace characters to spaces.
+            if recipe.tokenizer.force_alphanumeric
+                && document[i].is_whitespace()
+            {
+                document[i] = ' ';
+            }
+
+            // Convert characters to lowercase.
             let token = if recipe.tokenizer.make_lowercase {
                 document[i].to_lowercase().collect::<String>()
             } else {
@@ -656,6 +674,15 @@ pub fn build(
     recipe.keys.entry(String::from("model.tokenizer.make_lowercase"))
         .or_insert({
             if recipe.tokenizer.make_lowercase {
+                String::from("true")
+            } else {
+                String::from("false")
+            }
+        });
+
+    recipe.keys.entry(String::from("model.tokenizer.force_alphanumeric"))
+        .or_insert({
+            if recipe.tokenizer.force_alphanumeric {
                 String::from("true")
             } else {
                 String::from("false")
