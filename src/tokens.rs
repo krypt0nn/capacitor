@@ -18,6 +18,91 @@
 
 use std::collections::{HashMap, HashSet};
 
+/// Split text into pre-token items: single characters or whole `<|tag|>`
+/// special tags. Under alphanumeric-only tokenizer every non-alphanumeric
+/// character (punctuation or whitespace) acts as a word separator: runs of
+/// such characters collapse into a single space instead of being deleted.
+///
+/// Shared by model building and inference tokenization — these two must never
+/// drift apart.
+pub fn pre_tokenize(
+    text: impl AsRef<str>,
+    make_lowercase: bool,
+    force_alphanumeric: bool
+) -> Vec<String> {
+    fn push_char(out: &mut Vec<String>, c: char, make_lowercase: bool) {
+        out.push(if make_lowercase {
+            c.to_lowercase().collect::<String>()
+        } else {
+            c.to_string()
+        });
+    }
+
+    let chars = text.as_ref()
+        .chars()
+        .collect::<Box<[char]>>();
+
+    let n = chars.len();
+    let mut out = Vec::with_capacity(n);
+
+    let mut last_space = true;
+    let mut i = 0;
+
+    while i < n {
+        // Preserve special tags as separate items.
+        if chars[i] == '<' && i + 1 < n && chars[i + 1] == '|' {
+            let mut j = i + 2;
+            let mut found = false;
+
+            while j < n && (j - i) < 256 {
+                if chars[j] == '>' && chars[j - 1] == '|' {
+                    found = true;
+
+                    break;
+                }
+
+                j += 1;
+            }
+
+            // If we found <|token|>, then store it. Otherwise process
+            // < symbol as a regular character.
+            if found {
+                out.push(chars[i..=j].iter().collect::<String>());
+
+                last_space = true;
+
+                i = j + 1;
+
+                continue;
+            }
+        }
+
+        let c = chars[i];
+
+        if force_alphanumeric {
+            if c.is_alphanumeric() {
+                push_char(&mut out, c, make_lowercase);
+
+                last_space = false;
+            } else if !last_space {
+                out.push(String::from(" "));
+
+                last_space = true;
+            }
+        } else {
+            push_char(&mut out, c, make_lowercase);
+        }
+
+        i += 1;
+    }
+
+    if out.last().is_some_and(|item| item.as_str() == " ") {
+        out.pop();
+    }
+
+    out
+}
+
 // `[token - 2 bytes][word_len - 2 bytes][word - variable]`
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TokensMap(Box<[u8]>);
@@ -274,4 +359,33 @@ fn test_tokens_map() -> anyhow::Result<()> {
     assert_eq!(map.find_token("a"), Some(2));
 
     Ok(())
+}
+
+#[test]
+fn test_pre_tokenize() {
+    assert_eq!(
+        pre_tokenize("Hello,  world!", true, true),
+        ["h", "e", "l", "l", "o", " ", "w", "o", "r", "l", "d"]
+    );
+
+    // Punctuation and underscores act as separators, not glue.
+    assert_eq!(
+        pre_tokenize("how_is_wayland_an_upgrade?", true, true),
+        [
+            "h", "o", "w", " ", "i", "s", " ", "w", "a", "y", "l", "a", "n",
+            "d", " ", "a", "n", " ", "u", "p", "g", "r", "a", "d", "e"
+        ]
+    );
+
+    // Special tags are preserved as single items.
+    assert_eq!(
+        pre_tokenize("a<|tag|>b", false, true),
+        ["a", "<|tag|>", "b"]
+    );
+
+    // Without force_alphanumeric everything is kept as-is.
+    assert_eq!(
+        pre_tokenize("a,  b", true, false),
+        ["a", ",", " ", " ", "b"]
+    );
 }

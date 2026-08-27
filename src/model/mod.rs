@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use rand_chacha::rand_core::Rng;
 
-use crate::tokens::TokensMap;
+use crate::tokens::{pre_tokenize, TokensMap};
 use crate::transitions::{Transition, TransitionsMap};
 use crate::clustering::Cluster;
 use crate::recipe::Recipe;
@@ -298,48 +298,11 @@ impl Model {
             .unwrap_or("false") == "true";
 
         // Pre-tokenize given text.
-        let mut raw_text = text.as_ref()
-            .chars()
-            .collect::<Box<[char]>>();
-
-        let n = raw_text.len();
-
-        let mut text = Vec::with_capacity(n);
-        let mut i = 0;
-
-        while i < n {
-            // Skip non-alpha-numeric / whitespace characters.
-            if force_alphanumeric
-                && !(raw_text[i].is_alphanumeric() || raw_text[i].is_whitespace())
-            {
-                i += 1;
-
-                continue;
-            }
-
-            // Replace whitespace characters to spaces.
-            if force_alphanumeric && raw_text[i].is_whitespace() {
-                // Skip current character if previous one is whitespace too.
-                if i > 0 && raw_text[i - 1] == ' ' {
-                    i += 1;
-
-                    continue;
-                }
-
-                raw_text[i] = ' ';
-            }
-
-            // Convert character to lowercase.
-            let token = if make_lowercase {
-                raw_text[i].to_lowercase().collect::<String>()
-            } else {
-                raw_text[i].to_string()
-            };
-
-            text.push(token);
-
-            i += 1;
-        }
+        let text = pre_tokenize(
+            text.as_ref(),
+            make_lowercase,
+            force_alphanumeric
+        );
 
         // Tokenize the text.
         let n = text.len();

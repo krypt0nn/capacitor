@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use rand_chacha::rand_core::Rng;
 use rayon::prelude::*;
 
-use crate::tokens::TokensMap;
+use crate::tokens::{pre_tokenize, TokensMap};
 use crate::transitions::TransitionsMap;
 use crate::clustering::clusterize;
 use crate::recipe::Recipe;
@@ -234,90 +234,29 @@ pub fn build(
     for document in &documents {
         current += document.len() as u64;
 
-        let mut document = document.chars()
-            .collect::<Box<[char]>>();
+        let pre_tokenized_document = pre_tokenize(
+            document,
+            recipe.tokenizer.make_lowercase,
+            recipe.tokenizer.force_alphanumeric
+        );
 
-        let n = document.len();
-        let mut i = 0;
-
-        let mut pre_tokenized_document = Vec::with_capacity(document.len());
-
-        while i < n {
-            // Preserve special tags as separate tokens.
-            if document[i] == '<' && i + 1 < n && document[i + 1] == '|' {
-                let mut j = i + 2;
-                let mut found = false;
-
-                while j < n && (j - i) < 256 {
-                    if document[j] == '>' && document[j - 1] == '|' {
-                        found = true;
-
-                        break;
-                    }
-
-                    j += 1;
-                }
-
-                // If we found <|token|>, then store it. Otherwise process
-                // < symbol as separate character.
-                if found {
-                    let token = document[i..=j].iter().collect::<String>();
-
+        pre_tokenized_documents.push(
+            pre_tokenized_document.into_iter()
+                .map(|token| {
                     let id = internal_word(
                         &token,
                         &mut alphabet,
                         &mut vocab
                     );
 
-                    special_tags.insert(id);
-                    pre_tokenized_document.push(id);
+                    if token.starts_with("<|") && token.ends_with("|>") {
+                        special_tags.insert(id);
+                    }
 
-                    i = j + 1;
-
-                    continue;
-                }
-            }
-
-            // Skip non-alpha-numeric / whitespace characters.
-            if recipe.tokenizer.force_alphanumeric
-                && !(document[i].is_alphanumeric() || document[i].is_whitespace())
-            {
-                i += 1;
-
-                continue;
-            }
-
-            // Replace whitespace characters to spaces.
-            if recipe.tokenizer.force_alphanumeric
-                && document[i].is_whitespace()
-            {
-                // Skip current character if previous one is whitespace too.
-                if i > 0 && document[i - 1] == ' ' {
-                    i += 1;
-
-                    continue;
-                }
-
-                document[i] = ' ';
-            }
-
-            // Convert character to lowercase.
-            let token = if recipe.tokenizer.make_lowercase {
-                document[i].to_lowercase().collect::<String>()
-            } else {
-                document[i].to_string()
-            };
-
-            pre_tokenized_document.push(internal_word(
-                &token,
-                &mut alphabet,
-                &mut vocab
-            ));
-
-            i += 1;
-        }
-
-        pre_tokenized_documents.push(pre_tokenized_document);
+                    id
+                })
+                .collect::<Vec<u16>>()
+        );
 
         progress(Progress::PreTokenize { current, total });
     }
