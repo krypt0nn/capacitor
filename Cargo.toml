@@ -26,6 +26,7 @@ default = ["mimalloc"]
 anyhow = "1.0"
 rand_chacha = "0.10"
 rayon = "1.12"
+nutmeg = "0.1"
 
 mimalloc = { version = "0.1", optional = true }
 

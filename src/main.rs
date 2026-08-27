@@ -95,29 +95,106 @@ fn main() -> anyhow::Result<()> {
                 .map(|parent| parent.join(model_name))
                 .unwrap_or_else(|| PathBuf::from(model_name));
 
-            println!("Building the model...");
+            #[derive(Default)]
+            struct ProgressBar {
+                prefix: &'static str,
+                current: u64,
+                total: u64,
+                only_fraction: bool
+            }
 
-            let model = Model::build(recipe, &mut get_rng(), |progress| {
+            impl nutmeg::Model for ProgressBar {
+                fn render(&mut self, width: usize) -> String {
+                    if self.total == 0 {
+                        return self.prefix.to_string();
+                    }
+
+                    let current = self.current.to_string();
+                    let total = self.total.to_string();
+
+                    let fraction = (self.current as f32 / self.total as f32).min(1.0);
+
+                    let fraction_str = format!("{:.2}", fraction * 100.0);
+
+                    let mut pb_size = width.saturating_sub(
+                        self.prefix.len() + fraction_str.len() + 8
+                    );
+
+                    if !self.only_fraction {
+                        pb_size = pb_size.saturating_sub(
+                            current.len() + total.len() + 2
+                        );
+                    }
+
+                    let pb_prefix_size = (pb_size as f32 * fraction).round() as usize;
+                    let pb_suffix_size = pb_size - pb_prefix_size;
+
+                    if self.only_fraction {
+                        format!(
+                            "{} ({fraction_str} %) [{}{}]",
+                            self.prefix,
+                            "#".repeat(pb_prefix_size),
+                            " ".repeat(pb_suffix_size)
+                        )
+                    } else {
+                        format!(
+                            "{} {current}/{total} ({fraction_str} %) [{}{}]",
+                            self.prefix,
+                            "#".repeat(pb_prefix_size),
+                            " ".repeat(pb_suffix_size)
+                        )
+                    }
+                }
+            }
+
+            let view = nutmeg::View::new(
+                ProgressBar::default(),
+                nutmeg::Options::default()
+            );
+
+            println!("Building the model ...");
+
+            let model = Model::build(recipe, &mut get_rng(), move |progress| {
                 match progress {
                     BuildProgress::ReadFiles { current, total } => {
-                        println!(
-                            "Reading dataset files {current}/{total} ({:.2} %) ...",
-                            current as f32 / total as f32 * 100.0
-                        );
+                        view.update(|model| {
+                            model.prefix = "Reading dataset files";
+
+                            model.current = current as u64;
+                            model.total = total as u64;
+
+                            model.only_fraction = false;
+                        });
                     }
 
                     BuildProgress::PreTokenize { current, total } => {
-                        println!(
-                            "Pre-tokenizing documents ({:.2} %) ...",
-                            current as f32 / total as f32 * 100.0
-                        );
+                        view.update(|model| {
+                            if model.prefix != "Pre-tokenizing documents" {
+                                model.prefix = "Pre-tokenizing documents";
+
+                                println!();
+                            }
+
+                            model.current = current;
+                            model.total = total;
+
+                            model.only_fraction = true;
+                        });
                     }
 
                     BuildProgress::FitTokenizer { current, total } => {
-                        println!(
-                            "Learning BPE tokens {current}/{total} ({:.2} %) ...",
-                            current as f32 / total as f32 * 100.0
-                        );
+                        view.update(|model| {
+                            if model.prefix != "Learning BPE tokens" {
+                                model.prefix = "Learning BPE tokens";
+
+                                println!();
+                            }
+
+                            model.current = current as u64;
+                            model.total = total as u64;
+
+                            model.only_fraction = false;
+                        });
                     }
 
                     BuildProgress::BuildTokensMap => {
@@ -133,10 +210,14 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     BuildProgress::BuildExperts { current, total } => {
-                        println!(
-                            "Building experts {current}/{total} ({:.2} %) ...",
-                            current as f32 / total as f32 * 100.0
-                        );
+                        view.update(|model| {
+                            model.prefix = "Building experts";
+
+                            model.current = current as u64;
+                            model.total = total as u64;
+
+                            model.only_fraction = false;
+                        });
                     }
 
                     BuildProgress::Done => {
