@@ -7,8 +7,7 @@ project for text generation using highly modified Markov chains architecture.
 
 - A generalized recipe file with instructions to build the model from sources;
 - BPE-style tokenizer (unicode characters instead of bytes);
-- N-grams support;
-- Simple quantization support;
+- Configurable N-gram `from_num` -> `to_num` transitions table;
 - Custom MoE-like architecture (prompt classification, per-class transitions);
 - Custom highly efficient model storage format.
 

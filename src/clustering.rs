@@ -22,26 +22,30 @@ use std::cmp::Ordering;
 use rand_chacha::rand_core::Rng;
 use rayon::prelude::*;
 
+/// Distinct tokens are addressed by their `u16` value directly - there can be
+/// at most 65536 of them, so all dense buffers are preallocated to that size.
+const MAX_TOKENS: usize = u16::MAX as usize + 1;
+
 #[derive(Debug, Clone)]
-pub struct Cluster<T> {
-    ranks: HashMap<T, f32>
+pub struct Cluster {
+    ranks: HashMap<u16, f32>
 }
 
-impl<T: PartialEq + Eq + std::hash::Hash> Cluster<T> {
+impl Cluster {
     #[inline]
-    pub fn new(ranks: impl IntoIterator<Item = (T, f32)>) -> Self {
+    pub fn new(ranks: impl IntoIterator<Item = (u16, f32)>) -> Self {
         Self {
             ranks: HashMap::from_iter(ranks)
         }
     }
 
     #[inline]
-    pub fn into_inner(self) -> HashMap<T, f32> {
+    pub fn into_inner(self) -> HashMap<u16, f32> {
         self.ranks
     }
 
     /// Calculate similarity between the current cluster to the given document.
-    pub fn similarity(&self, document: impl IntoIterator<Item = T>) -> f32 {
+    pub fn similarity(&self, document: impl IntoIterator<Item = u16>) -> f32 {
         let mut similarity = 0.0;
 
         for token in document {
@@ -54,19 +58,15 @@ impl<T: PartialEq + Eq + std::hash::Hash> Cluster<T> {
     }
 }
 
-impl<T> From<HashMap<T, f32>> for Cluster<T> {
+impl From<HashMap<u16, f32>> for Cluster {
     #[inline(always)]
-    fn from(ranks: HashMap<T, f32>) -> Self {
+    fn from(ranks: HashMap<u16, f32>) -> Self {
         Self { ranks }
     }
 }
 
 /// Distinct tokens of a document with their occurrence counts.
-///
-/// Token identities are interned into dense `u32` indices, so similarities and
-/// ranks are computed as plain indexed dot products instead of hashed map
-/// lookups.
-type Profile = Box<[(u32, u32)]>;
+type Profile = Box<[(u16, u32)]>;
 
 /// Clusterize documents into semantic groups using weighted farthest-point
 /// centroid sampling over sparse token rank vectors.
@@ -74,12 +74,12 @@ type Profile = Box<[(u32, u32)]>;
 /// Returns the clusters alongside per-document index of the most similar
 /// cluster (the assignment is computed during clusterization itself).
 #[allow(clippy::type_complexity)]
-pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
+pub fn clusterize(
     mut clusters_num: usize,
     mut centroids_num: usize,
-    documents: impl AsRef<[Box<[T]>]>,
+    documents: impl AsRef<[Box<[u16]>]>,
     rng: &mut impl Rng
-) -> anyhow::Result<(Box<[Cluster<T>]>, Box<[usize]>)> {
+) -> anyhow::Result<(Box<[Cluster]>, Box<[usize]>)> {
     let documents = documents.as_ref();
 
     if clusters_num == 0 {
@@ -126,63 +126,67 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
         anyhow::bail!("clusters_num * centroids_num must be lower or equal to the documents amount");
     }
 
-    // Intern tokens into dense indices and count distinct token occurrences of
-    // every document. One scratch counters map is reused across documents.
+    // Count distinct token occurrences of every document. One scratch counter
+    // buffer indexed by token value is reused across documents.
 
-    let mut interner = HashMap::<T, u32>::new();
-    let mut vocabulary = Vec::<T>::new();
-    let mut doc_appearances = Vec::<u32>::new();
-    let mut counts = HashMap::<u32, u32>::new();
+    let mut counters = vec![0_u32; MAX_TOKENS];
+    let mut touched = Vec::<u16>::new();
 
     let mut profiles = Vec::<Profile>::with_capacity(documents.len());
     let mut total_tokens = 0;
 
     for document in documents {
-        counts.clear();
+        touched.clear();
 
-        for token in document {
-            let idx = match interner.get(token) {
-                Some(&idx) => idx,
+        for &token in document.iter() {
+            let count = &mut counters[token as usize];
 
-                None => {
-                    let idx = vocabulary.len() as u32;
+            if *count == 0 {
+                touched.push(token);
+            }
 
-                    interner.insert(token.clone(), idx);
-                    vocabulary.push(token.clone());
-                    doc_appearances.push(0);
-
-                    idx
-                }
-            };
-
-            *counts.entry(idx).or_default() += 1;
+            *count += 1;
         }
 
         total_tokens += document.len();
 
-        let mut profile = Vec::with_capacity(counts.len());
+        let mut profile = Vec::with_capacity(touched.len());
 
-        for (&idx, &count) in counts.iter() {
-            profile.push((idx, count));
-
-            doc_appearances[idx as usize] += 1;
+        for &token in &touched {
+            profile.push((token, counters[token as usize]));
         }
 
         profiles.push(profile.into_boxed_slice());
+
+        for &token in &touched {
+            counters[token as usize] = 0;
+        }
     }
 
-    // Negated log2 appearance-in-documents frequency of every token.
+    // Appearance-in-documents frequency of every token.
+
+    let mut doc_appearances = vec![0_u32; MAX_TOKENS];
+
+    for profile in &profiles {
+        for &(token, _) in profile.iter() {
+            doc_appearances[token as usize] += 1;
+        }
+    }
+
+    // Negated log2 appearance frequency of every token.
 
     let neg_log_tf = doc_appearances.iter()
-        .map(|&count| -((count as f32 / total_tokens.max(1) as f32).log2()))
+        .map(|&count| -((count.max(1) as f32 / total_tokens.max(1) as f32).log2()))
         .collect::<Vec<f32>>();
+
+    drop(doc_appearances);
 
     // Dense working buffers reused by every clustering round: accumulated
     // frequencies, resulting ranks and non-zero rank members.
 
-    let mut acc = vec![0.0_f32; vocabulary.len()];
-    let mut ranks = vec![0.0_f32; vocabulary.len()];
-    let mut members = Vec::<u32>::with_capacity(vocabulary.len());
+    let mut acc = vec![0.0_f32; MAX_TOKENS];
+    let mut ranks = vec![0.0_f32; MAX_TOKENS];
+    let mut members = Vec::<u16>::with_capacity(MAX_TOKENS);
 
     // Cumulative products of similarities to the clusters formed so far -
     // one entry per document. Used for weighted farthest-document centroid
@@ -214,7 +218,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
     // Sparse rank snapshots of every formed cluster - dense buffers are zeroed
     // after each round, so snapshots are the only preserved representation.
 
-    let mut clusters_ranks = Vec::<Box<[(u32, f32)]>>::with_capacity(clusters_num);
+    let mut clusters_ranks = Vec::<Box<[(u16, f32)]>>::with_capacity(clusters_num);
 
     for i in 0..clusters_num {
         // Sum per-document token frequencies of the cluster subset.
@@ -222,8 +226,8 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
         for &id in &clusters_ids[i] {
             let cluster_doc_len = lengths[id as usize] as f32;
 
-            for &(idx, count) in profiles[id as usize].iter() {
-                acc[idx as usize] += count as f32 / cluster_doc_len;
+            for &(token, count) in profiles[id as usize].iter() {
+                acc[token as usize] += count as f32 / cluster_doc_len;
             }
         }
 
@@ -231,16 +235,16 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
 
         let cluster_len = clusters_ids[i].len() as f32;
 
-        for (idx, freq) in acc.iter_mut().enumerate() {
+        for (token, freq) in acc.iter_mut().enumerate() {
             if *freq != 0.0 {
-                members.push(idx as u32);
+                members.push(token as u16);
 
-                ranks[idx] = ((*freq / cluster_len).log2()) + neg_log_tf[idx];
+                ranks[token] = ((*freq / cluster_len).log2()) + neg_log_tf[token];
             }
         }
 
         clusters_ranks.push(members.iter()
-            .map(|&idx| (idx, ranks[idx as usize]))
+            .map(|&token| (token, ranks[token as usize]))
             .collect());
 
         // Score every document against the current cluster ranks.
@@ -248,7 +252,7 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
         let scores = profiles.par_iter()
             .map(|profile| {
                 profile.iter()
-                    .map(|&(idx, count)| ranks[idx as usize] * count as f32)
+                    .map(|&(token, count)| ranks[token as usize] * count as f32)
                     .sum::<f32>()
             })
             .collect::<Box<[f32]>>();
@@ -273,9 +277,9 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
 
         // Reset dense buffers before forming the next cluster.
 
-        for &idx in &members {
-            acc[idx as usize] = 0.0;
-            ranks[idx as usize] = 0.0;
+        for &token in &members {
+            acc[token as usize] = 0.0;
+            ranks[token as usize] = 0.0;
         }
 
         members.clear();
@@ -343,7 +347,8 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
                 .enumerate()
                 .filter(|(_, id)| !sampled.contains(*id))
                 .max_by(|a, b| {
-                    weights[a.0].partial_cmp(&weights[b.0])
+                    weights[a.0]
+                        .partial_cmp(&weights[b.0])
                         .unwrap_or(Ordering::Equal)
                 })
             else {
@@ -362,17 +367,11 @@ pub fn clusterize<T: Clone + PartialEq + Eq + std::hash::Hash + Send + Sync>(
 
     // Prepare clusters output.
 
-    let mut clusters = Vec::with_capacity(clusters_num);
-
-    for snapshot in clusters_ranks {
-        let mut ranks_map = HashMap::<T, f32>::default();
-
-        for (idx, rank) in snapshot {
-            ranks_map.insert(vocabulary[idx as usize].clone(), rank);
-        }
-
-        clusters.push(Cluster { ranks: ranks_map });
-    }
+    let clusters = clusters_ranks.into_iter()
+        .map(|snapshot| Cluster {
+            ranks: HashMap::from_iter(snapshot)
+        })
+        .collect::<Vec<Cluster>>();
 
     Ok((
         clusters.into_boxed_slice(),
@@ -388,7 +387,7 @@ mod tests {
 
     use super::clusterize;
 
-    fn make_document(token: u64, len: usize) -> Box<[u64]> {
+    fn make_document(token: u16, len: usize) -> Box<[u16]> {
         vec![token; len].into_boxed_slice()
     }
 
@@ -405,14 +404,13 @@ mod tests {
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
 
-        let (clusters, assignments) = clusterize(3, 2, &documents, &mut rng)
-            .expect("should clusterize");
+        let (clusters, assignments) =
+            clusterize(3, 2, &documents, &mut rng).expect("should clusterize");
 
         assert_eq!(clusters.len(), 3);
         assert_eq!(assignments.len(), documents.len());
 
         // Documents sharing their whole vocabulary must land together.
-
         for i in 0..documents.len() {
             for j in 0..documents.len() {
                 if documents[i][0] == documents[j][0] {
@@ -432,7 +430,6 @@ mod tests {
 
         // Three separated vocabularies must not collapse into a single
         // assignment value.
-
         assert!(assignments.iter().collect::<HashSet<_>>().len() >= 2);
     }
 
@@ -440,7 +437,7 @@ mod tests {
     fn empty_input_bails() {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
 
-        let result = clusterize::<u64>(4, 2, Vec::new(), &mut rng);
+        let result = clusterize(4, 2, Vec::new(), &mut rng);
 
         assert!(result.is_err());
     }

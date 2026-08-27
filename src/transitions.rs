@@ -111,6 +111,18 @@ impl TransitionsMap {
         Self::open(map)
     }
 
+    /// Amount of tokens in each `from` n-gram.
+    #[inline(always)]
+    pub const fn from_count(&self) -> usize {
+        self.from_count
+    }
+
+    /// Amount of tokens in each `to` n-gram.
+    #[inline(always)]
+    pub const fn to_count(&self) -> usize {
+        self.to_count
+    }
+
     /// Amount of transitions stored in the map.
     #[inline]
     pub const fn len(&self) -> usize {
@@ -125,7 +137,7 @@ impl TransitionsMap {
 
     #[inline]
     pub const fn is_empty(&self) -> bool {
-        self.map.len() < 3
+        self.map.len() < 4
     }
 
     fn read_transition(&self, idx: usize) -> Transition {
@@ -138,7 +150,7 @@ impl TransitionsMap {
 
         while i < self.from_count {
             let token = u16::from_le_bytes([
-                self.map[offset + i * 2], self.map[offset + (i + 1) * 2]
+                self.map[offset + i * 2], self.map[offset + i * 2 + 1]
             ]);
 
             from_tokens.push(token);
@@ -148,7 +160,7 @@ impl TransitionsMap {
 
         while i < self.from_count + self.to_count {
             let token = u16::from_le_bytes([
-                self.map[offset + i * 2], self.map[offset + (i + 1) * 2]
+                self.map[offset + i * 2], self.map[offset + i * 2 + 1]
             ]);
 
             to_tokens.push(token);

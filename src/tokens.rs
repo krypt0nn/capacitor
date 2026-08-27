@@ -37,8 +37,7 @@ impl TokensMap {
         words: impl IntoIterator<Item = F>
     ) -> anyhow::Result<Self> {
         let mut unique_words = HashSet::new();
-        let mut token = 0_u16;
-        let mut map = Vec::new();
+        let mut deduped = Vec::new();
 
         for word in words {
             let word = word.as_ref();
@@ -48,12 +47,22 @@ impl TokensMap {
             }
 
             if unique_words.insert(word.to_vec()) {
-                map.extend(token.to_le_bytes());
-                map.extend((word.len() as u16).to_le_bytes());
-                map.extend(word);
-
-                token += 1;
+                deduped.push(word.to_vec());
             }
+        }
+
+        // Store the longest tokens first - makes word lookups stop early once
+        // candidates become shorter than the searched word, and makes
+        // max_token_len trivial.
+        #[allow(clippy::unnecessary_sort_by)]
+        deduped.sort_by(|a, b| b.len().cmp(&a.len()));
+
+        let mut map = Vec::new();
+
+        for (token, word) in deduped.into_iter().enumerate() {
+            map.extend((token as u16).to_le_bytes());
+            map.extend((word.len() as u16).to_le_bytes());
+            map.extend(word);
         }
 
         Ok(Self(map.into_boxed_slice()))
@@ -98,6 +107,14 @@ impl TokensMap {
             ]) as usize;
 
             i += 4;
+
+            // Words are stored in descending length order - all the following
+            // words are shorter than the current one - and thus shorter than
+            // the searched word too, so there's nothing left to match.
+
+            if word_len < word.len() {
+                return None;
+            }
 
             let token_word = &self.0[i..i + word_len];
 
@@ -190,25 +207,15 @@ impl TokensMap {
     }
 
     /// Length of the longest stored token.
-    pub const fn max_token_len(&self) -> usize {
-        let mut i = 2;
-        let mut max_len = 0;
-
-        let n = self.0.len();
-
-        while i < n {
-            let word_len = u16::from_le_bytes([
-                self.0[i], self.0[i + 1]
-            ]) as usize;
-
-            if max_len < word_len {
-                max_len = word_len;
-            }
-
-            i += 4 + word_len;
+    ///
+    /// Words are stored in descending length order, so it's just the first
+    /// record's length.
+    pub fn max_token_len(&self) -> usize {
+        if self.is_empty() {
+            return 0;
         }
 
-        max_len
+        u16::from_le_bytes([self.0[2], self.0[3]]) as usize
     }
 }
 
@@ -243,6 +250,28 @@ fn test_tokens_map() -> anyhow::Result<()> {
     assert_eq!(table.len(), 2);
     assert_eq!(table.get(b"hello".as_slice()), Some(&hello_token));
     assert_eq!(table.get(b"world".as_slice()), Some(&world_token));
+
+    // Words are stored in descending length order, so token ids follow it.
+
+    let map = TokensMap::from_words([
+        "a",
+        "longest",
+        "bc"
+    ])?;
+
+    assert_eq!(map.max_token_len(), 7);
+    assert_eq!(map.find_word(0).as_deref(), Some(b"longest".as_slice()));
+    assert_eq!(map.find_word(1).as_deref(), Some(b"bc".as_slice()));
+    assert_eq!(map.find_word(2).as_deref(), Some(b"a".as_slice()));
+    assert_eq!(map.find_token("longest"), Some(0));
+
+    // Truncated longest word must not be found through any suffix.
+
+    assert_eq!(map.find_token("longes"), None);
+
+    // Single letters exist in the map as their own tokens.
+
+    assert_eq!(map.find_token("a"), Some(2));
 
     Ok(())
 }

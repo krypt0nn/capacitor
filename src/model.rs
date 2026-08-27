@@ -81,13 +81,13 @@ pub enum BuildProgress {
 
 #[derive(Debug, Clone)]
 pub struct Expert {
-    cluster: Cluster<u16>,
+    cluster: Cluster,
     transitions: TransitionsMap
 }
 
 impl Expert {
     #[inline(always)]
-    pub const fn cluster(&self) -> &Cluster<u16> {
+    pub const fn cluster(&self) -> &Cluster {
         &self.cluster
     }
 
@@ -371,14 +371,14 @@ impl Model {
 
         fn internal_word(
             word: &str,
-            alphabet: &mut HashMap<String, u32>,
+            alphabet: &mut HashMap<String, u16>,
             vocab: &mut Vec<String>
-        ) -> u32 {
+        ) -> u16 {
             if let Some(&id) = alphabet.get(word) {
                 return id;
             }
 
-            let id = vocab.len() as u32;
+            let id = vocab.len() as u16;
 
             alphabet.insert(word.to_string(), id);
             vocab.push(word.to_string());
@@ -387,8 +387,8 @@ impl Model {
         }
 
         fn document_pairs(
-            document: &[u32]
-        ) -> HashMap<(u32, u32), u64> {
+            document: &[u16]
+        ) -> HashMap<(u16, u16), u64> {
             let mut counts = HashMap::with_capacity(document.len());
 
             for pair in document.windows(2) {
@@ -402,10 +402,10 @@ impl Model {
         }
 
         fn replace_pairs(
-            document: &mut Vec<u32>,
-            id_1: u32,
-            id_2: u32,
-            new_id: u32
+            document: &mut Vec<u16>,
+            id_1: u16,
+            id_2: u16,
+            new_id: u16
         ) {
             let mut i = 0;
             let mut j = 0;
@@ -430,11 +430,11 @@ impl Model {
             document.truncate(i);
         }
 
-        let mut alphabet = HashMap::<String, u32>::new();
+        let mut alphabet = HashMap::<String, u16>::new();
         let mut vocab = Vec::<String>::new();
 
         // Special tags must never be merged with other tokens.
-        let mut special_tags = HashSet::<u32>::new();
+        let mut special_tags = HashSet::<u16>::new();
 
         special_tags.insert(internal_word(Self::START_TOKEN, &mut alphabet, &mut vocab));
         special_tags.insert(internal_word(Self::STOP_TOKEN, &mut alphabet, &mut vocab));
@@ -541,7 +541,7 @@ impl Model {
                 true
             })
             .cloned()
-            .collect::<Vec<Vec<u32>>>();
+            .collect::<Vec<Vec<u16>>>();
 
         progress(BuildProgress::FitTokenizer {
             current: vocab.len(),
@@ -549,8 +549,8 @@ impl Model {
         });
 
         // Count symbol pairs and index documents containing each pair.
-        let mut pair_frequencies = HashMap::<(u32, u32), u64>::new();
-        let mut pair_documents = HashMap::<(u32, u32), Vec<u32>>::new();
+        let mut pair_frequencies = HashMap::<(u16, u16), u64>::new();
+        let mut pair_documents = HashMap::<(u16, u16), Vec<u32>>::new();
         let mut seen_documents = HashSet::new();
 
         for (document_index, document) in training_documents.iter().enumerate() {
@@ -592,7 +592,7 @@ impl Model {
                 continue;
             }
 
-            let new_id = vocab.len() as u32;
+            let new_id = vocab.len() as u16;
 
             alphabet.insert(new_token.clone(), new_id);
             vocab.push(new_token);
@@ -1194,16 +1194,42 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
         }
 
         // Find transitions from the base model and loaded experts.
+        //
+        // The context is trimmed down from the full tail until some
+        // continuation is found - deep exact matches are preferred, but
+        // generation must not die just because the query phrasing differs
+        // from anything in the corpus.
 
-        let mut transitions = self.model.transitions.find_transitions(&self.sequence)
-            .into_iter()
-            .map(|transition| (
-                transition.from,
-                transition.to,
-                transition.weight as u64,
-                1.0
-            ))
-            .collect::<Vec<_>>();
+        let max_ctx = self.model.transitions.from_count()
+            .min(self.sequence.len());
+
+        let mut ctx_len = max_ctx;
+        let mut transitions = Vec::new();
+
+        while ctx_len >= 1 {
+            transitions = self.model.transitions
+                .find_transitions(&self.sequence[self.sequence.len() - ctx_len..])
+                .into_iter()
+                .map(|transition| (
+                    transition.from,
+                    transition.to,
+                    transition.weight as u64,
+                    1.0
+                ))
+                .collect::<Vec<_>>();
+
+            if !transitions.is_empty() {
+                break;
+            }
+
+            if ctx_len > 1 {
+                ctx_len -= 1;
+
+                continue;
+            }
+
+            break;
+        }
 
         let total_similarity = experts.iter()
             .map(|expert| expert.2)
@@ -1223,13 +1249,15 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
             transitions.extend(expert_transitions);
         }
 
-        // Resolve tokens if it's trivial.
-
+        // Stop generation if there's nothing to choose from.
         if transitions.is_empty() {
             return None;
         }
 
-        if let Some((_, to, _, _)) = transitions.first() {
+        // Take the only available continuation as is.
+        if transitions.len() == 1 {
+            let to = &transitions[0].1;
+
             self.sequence.extend_from_slice(to);
             self.sequence_ptr += 1;
 
