@@ -236,7 +236,7 @@ impl std::fmt::Display for Recipe {
                     (true,  false) => format!("File {}", file.path.display()),
                     (true,  true)  => format!("Shuffle File {}", file.path.display()),
                     (false, false) => format!("Split {} File {}", file.delimiter, file.path.display()),
-                    (false, true)  => format!("Split {} Shuffle File {}", file.delimiter, file.path.display())
+                    (false, true)  => format!("Shuffle Split {} File {}", file.delimiter, file.path.display())
                 }
             })
             .collect::<Vec<String>>();
@@ -474,7 +474,7 @@ impl FromStr for Recipe {
                 recipe.files.push(File {
                     path: PathBuf::from(value.trim()),
                     delimiter: String::from("<|document|>"),
-                    shuffle: true
+                    shuffle: false
                 });
             }
 
@@ -497,7 +497,19 @@ impl FromStr for Recipe {
 
                 else {
                     anyhow::bail!("invalid split file parameter: {line}");
-                }
+                };
+            }
+
+            else if let Some(value) = line.strip_prefix("Shuffle Split ") {
+                let Some((delimiter, path)) = value.split_once(" File ") else {
+                    anyhow::bail!("invalid split file parameter: {line}");
+                };
+
+                recipe.files.push(File {
+                    path: PathBuf::from(path.trim()),
+                    delimiter: delimiter.trim().to_string(),
+                    shuffle: true
+                });
             }
 
             else {
