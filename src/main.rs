@@ -248,9 +248,26 @@ fn main() -> anyhow::Result<()> {
 
             let mut verbose = false;
 
-            for flag in args {
+            let mut top_k = None;
+            let mut temperature = None;
+
+            while let Some(flag) = args.next() {
                 if ["-v", "--verbose"].contains(&flag.as_str()) {
                     verbose = true;
+                }
+
+                else if flag.as_str() == "--top-k" {
+                    top_k = args.next()
+                        .map(|value| value.parse::<usize>())
+                        .transpose()
+                        .map_err(|err| anyhow::anyhow!("invalid top_k format: {err}"))?;
+                }
+
+                else if ["--temp", "--temperature"].contains(&flag.as_str()) {
+                    temperature = args.next()
+                        .map(|value| value.parse::<f32>())
+                        .transpose()
+                        .map_err(|err| anyhow::anyhow!("invalid temperature format: {err}"))?;
                 }
 
                 else {
@@ -263,7 +280,21 @@ fn main() -> anyhow::Result<()> {
             stdout.write_all(b"Loading model...")?;
             stdout.flush()?;
 
-            let model = Model::open(std::fs::read(path)?)?;
+            let mut model = Model::open(std::fs::read(path)?)?;
+
+            if let Some(value) = top_k {
+                model.keys_mut().insert(
+                    String::from("model.inference.top_k"),
+                    value.to_string()
+                );
+            }
+
+            if let Some(value) = temperature {
+                model.keys_mut().insert(
+                    String::from("model.inference.temperature"),
+                    value.to_string()
+                );
+            }
 
             let stdin = std::io::stdin();
 
