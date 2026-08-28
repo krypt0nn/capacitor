@@ -18,6 +18,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use compact_str::{CompactString, ToCompactString};
+
 /// Split text into pre-token items: single characters or whole `<|tag|>`
 /// special tags. Under alphanumeric-only tokenizer every non-alphanumeric
 /// character (punctuation or whitespace) acts as a word separator: runs of
@@ -29,12 +31,12 @@ pub fn pre_tokenize(
     text: impl AsRef<str>,
     make_lowercase: bool,
     force_alphanumeric: bool
-) -> Vec<String> {
-    fn push_char(out: &mut Vec<String>, c: char, make_lowercase: bool) {
+) -> Vec<CompactString> {
+    fn push_char(out: &mut Vec<CompactString>, c: char, make_lowercase: bool) {
         out.push(if make_lowercase {
-            c.to_lowercase().collect::<String>()
+            c.to_lowercase().collect::<CompactString>()
         } else {
-            c.to_string()
+            c.to_compact_string()
         });
     }
 
@@ -67,7 +69,7 @@ pub fn pre_tokenize(
             // If we found <|token|>, then store it. Otherwise process
             // < symbol as a regular character.
             if found {
-                out.push(chars[i..=j].iter().collect::<String>());
+                out.push(chars[i..=j].iter().collect::<CompactString>());
 
                 last_space = true;
 
@@ -85,7 +87,7 @@ pub fn pre_tokenize(
 
                 last_space = false;
             } else if !last_space {
-                out.push(String::from(" "));
+                out.push(CompactString::from(" "));
 
                 last_space = true;
             }

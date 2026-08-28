@@ -18,6 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use compact_str::{CompactString, ToCompactString};
 use rand_chacha::rand_core::Rng;
 use rayon::prelude::*;
 
@@ -147,8 +148,8 @@ pub fn build(
 
     fn internal_word(
         word: &str,
-        alphabet: &mut HashMap<String, u16>,
-        vocab: &mut Vec<String>
+        alphabet: &mut HashMap<CompactString, u16>,
+        vocab: &mut Vec<CompactString>
     ) -> u16 {
         if let Some(&id) = alphabet.get(word) {
             return id;
@@ -156,8 +157,8 @@ pub fn build(
 
         let id = vocab.len() as u16;
 
-        alphabet.insert(word.to_string(), id);
-        vocab.push(word.to_string());
+        alphabet.insert(word.to_compact_string(), id);
+        vocab.push(word.to_compact_string());
 
         id
     }
@@ -206,11 +207,11 @@ pub fn build(
         document.truncate(i);
     }
 
-    let mut alphabet = HashMap::<String, u16>::new();
-    let mut vocab = Vec::<String>::new();
+    let mut alphabet = HashMap::new();
+    let mut vocab = Vec::new();
 
     // Special tags must never be merged with other tokens.
-    let mut special_tags = HashSet::<u16>::new();
+    let mut special_tags = HashSet::new();
 
     special_tags.insert(internal_word(Model::START_TOKEN, &mut alphabet, &mut vocab));
     special_tags.insert(internal_word(Model::STOP_TOKEN, &mut alphabet, &mut vocab));
