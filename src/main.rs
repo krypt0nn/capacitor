@@ -374,7 +374,7 @@ fn main() -> anyhow::Result<()> {
                 stdout.flush()?;
 
                 let transitions = model.transitions_ref()
-                    .find_transitions(&prefix);
+                    .find_transitions(model.normalize_tail(&prefix));
 
                 if !transitions.is_empty() {
                     stdout.write_all(b"Base model:\n")?;

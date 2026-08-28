@@ -262,6 +262,10 @@ pub fn build(
         progress(Progress::PreTokenize { current, total });
     }
 
+    // The very last document may be overwritten in the progress view by the
+    // next stage before it gets rendered - close the bar explicitly.
+    progress(Progress::PreTokenize { current: total, total });
+
     // Train tokens model.
     //
     // Take small part of the pre-tokenized documents to speed-up BPE
@@ -317,9 +321,15 @@ pub fn build(
     }
 
     while (vocab.len() as u16) < recipe.tokenizer.num_tokens {
-        // Take the most frequent pair.
+        // Take the most frequent pair. Merges which would produce a token
+        // ending with whitespace are rejected: whitespace must lead the
+        // following token instead (` there`), so bare word tokens keep the
+        // word boundary statistics that inference prompts end on.
 
         let Some((&best_pair, _)) = pair_frequencies.par_iter()
+            .filter(|(pair, _)| {
+                !vocab[pair.1 as usize].ends_with(char::is_whitespace)
+            })
             .max_by_key(|(_, frequency)| **frequency)
         else {
             // Stop learning if no more token pairs available.
@@ -402,6 +412,13 @@ pub fn build(
         });
     }
 
+    // The corpus may run out of pairs before the requested token amount is
+    // learned - close the bar explicitly.
+    progress(Progress::FitTokenizer {
+        current: recipe.tokenizer.num_tokens,
+        total: recipe.tokenizer.num_tokens
+    });
+
     // Build tokens map.
 
     progress(Progress::BuildTokensMap);
@@ -409,6 +426,11 @@ pub fn build(
     let tokens_map = TokensMap::from_words(vocab.iter())?;
 
     let words_table = tokens_map.as_words_table();
+
+    // Alias for every vocab word: token id of its bare last word. From-grams
+    // are keyed on these so a word's statistics do not depend on how it
+    // happened to be tokenized (` chat`, `hi chat` -> `chat`).
+    let word_aliases = super::word_aliases(&tokens_map);
 
     // Tokenize documents.
     //
@@ -462,13 +484,26 @@ pub fn build(
         .collect::<Box<[Box<[u16]>]>>();
 
     // Count transitions for every document.
+    //
+    // From-grams are keyed on the alias-normalized copy of each document, so
+    // every from token is represented by the bare last word it contains.
+    // To-grams keep their original tokens.
 
     progress(Progress::BuildSharedTransitions);
+
+    let normalized_documents = documents.par_iter()
+        .map(|document| {
+            document.iter()
+                .map(|&token| word_aliases.get(&token).copied().unwrap_or(token))
+                .collect::<Box<[u16]>>()
+        })
+        .collect::<Box<[Box<[u16]>]>>();
 
     let min_len = recipe.ngrams.num_from + recipe.ngrams.num_to;
 
     let transitions = documents.par_iter()
-        .filter_map(|document| {
+        .zip(normalized_documents.par_iter())
+        .filter_map(|(document, normalized)| {
             if document.len() < min_len {
                 return None;
             }
@@ -480,7 +515,7 @@ pub fn build(
 
             while i < doc_len {
                 let transition = (
-                    &document[i..i + recipe.ngrams.num_from],
+                    &normalized[i..i + recipe.ngrams.num_from],
                     &document[i + recipe.ngrams.num_from..i + min_len]
                 );
 
@@ -613,6 +648,10 @@ pub fn build(
             .into_iter()
             .flatten()
             .collect::<Vec<Expert>>();
+
+        // Empty clusters are skipped without reporting progress - close the
+        // bar explicitly.
+        progress(Progress::BuildExperts { current: n, total: n });
     }
 
     // Prefill default metadata keys.
@@ -694,6 +733,7 @@ pub fn build(
         keys: recipe.keys,
         tokens: tokens_map,
         transitions: transitions_map,
-        experts: experts.into_boxed_slice()
+        experts: experts.into_boxed_slice(),
+        word_aliases
     })
 }

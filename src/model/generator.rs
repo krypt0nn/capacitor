@@ -241,6 +241,10 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
                 .or_default() += 1;
         }
 
+        // Lookup tails are normalized the same way as the stored from-grams:
+        // every token is represented by the bare last word it contains.
+        let normalized = self.model.normalize_tail(&self.sequence);
+
         // Find transitions from the base model and loaded experts.
         //
         // The context is trimmed down from the full tail until some
@@ -256,7 +260,7 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
 
         while ctx_len >= 1 {
             transitions = self.model.transitions
-                .find_transitions(&self.sequence[self.sequence.len() - ctx_len..])
+                .find_transitions(&normalized[normalized.len() - ctx_len..])
                 .into_iter()
                 .map(|transition| (
                     transition.from,
@@ -284,7 +288,7 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
             .sum::<f32>();
 
         for expert in experts {
-            let expert_transitions = expert.1.find_transitions(&self.sequence)
+            let expert_transitions = expert.1.find_transitions(&normalized)
                 .into_iter()
                 .map(|transition| (
                     transition.from,

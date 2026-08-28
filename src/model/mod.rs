@@ -31,6 +31,39 @@ mod generator;
 pub use builder::Progress as BuildProgress;
 pub use generator::{TokensGenerator, TokensGeneratorStats};
 
+/// For every multi-word token, return the token id of its bare last word
+/// (` chat` -> `chat`, `hi chat` -> `chat`).
+fn word_aliases(tokens: &TokensMap) -> HashMap<u16, u16> {
+    let mut words = HashMap::<Box<[u8]>, u16>::new();
+    let mut multi_word = Vec::new();
+
+    tokens.for_each(|token, word| {
+        let Ok(word) = std::str::from_utf8(&word) else {
+            return;
+        };
+
+        words.insert(word.as_bytes().into(), token);
+
+        if word.contains(char::is_whitespace) {
+            multi_word.push((token, word.to_owned()));
+        }
+    });
+
+    let mut aliases = HashMap::new();
+
+    for (token, word) in multi_word {
+        let Some(last_word) = word.split_whitespace().last() else {
+            continue;
+        };
+
+        if let Some(&id) = words.get(last_word.as_bytes()) {
+            aliases.insert(token, id);
+        }
+    }
+
+    aliases
+}
+
 #[derive(Debug, Clone)]
 pub struct Expert {
     cluster: Cluster,
@@ -64,10 +97,21 @@ impl Expert {
 
 #[derive(Debug, Clone)]
 pub struct Model {
+    /// Model metadata keys.
     keys: HashMap<String, String>,
+
+    /// Map of every token known to the model.
     tokens: TokensMap,
+
+    /// Map of transitions between all the known tokens.
     transitions: TransitionsMap,
-    experts: Box<[Expert]>
+
+    /// List of model experts and their transitions.
+    experts: Box<[Expert]>,
+
+    /// From-grams in the transitions maps are keyed on bare last words, so
+    /// transition lookups must normalize their token tails the same way.
+    word_aliases: HashMap<u16, u16>
 }
 
 impl Model {
@@ -211,11 +255,14 @@ impl Model {
 
         // Return the parsed model.
 
+        let word_aliases = word_aliases(&tokens_map);
+
         Ok(Self {
             keys,
             tokens: tokens_map,
             transitions: transitions_map,
-            experts: experts.into_boxed_slice()
+            experts: experts.into_boxed_slice(),
+            word_aliases
         })
     }
 
@@ -334,6 +381,19 @@ impl Model {
         }
 
         tokenized_text.into_boxed_slice()
+    }
+
+    /// Copy of the given tokens with every token replaced by the token of its
+    /// bare last word - matches the from-gram keys stored in the transitions
+    /// maps (` chat` -> `chat`, `hi chat` -> `chat`).
+    pub fn normalize_tail(&self, tail: &[u16]) -> Box<[u16]> {
+        tail.iter()
+            .map(|&token| {
+                self.word_aliases.get(&token)
+                    .copied()
+                    .unwrap_or(token)
+            })
+            .collect()
     }
 
     /// Get iterator that will generate new tokens to the given prefix, using
