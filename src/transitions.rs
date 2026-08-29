@@ -49,7 +49,9 @@ impl TransitionsMap {
 
         let record_size = from_count * 2 + to_count * 2 + 4;
 
-        if !(map.len() - 2).is_multiple_of(record_size) {
+        if map.len() < 2 + record_size
+            || !(map.len() - 2).is_multiple_of(record_size)
+        {
             anyhow::bail!("invalid transitions map layout");
         }
 
@@ -249,7 +251,7 @@ impl TransitionsMap {
                 }
 
                 Ordering::Less if middle_idx == left_idx => left_idx = middle_idx + 1,
-                Ordering::Greater if middle_idx == right_idx => right_idx = middle_idx - 1,
+                Ordering::Greater if middle_idx == right_idx => right_idx = middle_idx.saturating_sub(1),
 
                 Ordering::Less => left_idx = middle_idx,
                 Ordering::Greater => right_idx = middle_idx
@@ -372,6 +374,25 @@ fn test_transitions_map() -> anyhow::Result<()> {
         list[3].clone(),
         list[4].clone()
     ]));
+
+    Ok(())
+}
+
+#[test]
+fn test_small_transitions_map() -> anyhow::Result<()> {
+    let transitions = TransitionsMap::from_transitions([
+        ([1].as_slice(), [2].as_slice(), 1)
+    ])?;
+
+    assert_eq!(transitions.find_transitions([1]), HashSet::from_iter([Transition {
+        from: vec![1].into_boxed_slice(),
+        to: vec![2].into_boxed_slice(),
+        weight: 1
+    }]));
+
+    assert_eq!(transitions.find_transitions([9]), HashSet::new());
+
+    assert!(TransitionsMap::open(vec![0u8, 0].into_boxed_slice()).is_err());
 
     Ok(())
 }
