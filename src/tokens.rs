@@ -123,8 +123,11 @@ impl TokensMap {
     pub fn from_words<F: AsRef<[u8]>>(
         words: impl IntoIterator<Item = F>
     ) -> anyhow::Result<Self> {
-        let mut unique_words = HashSet::new();
-        let mut deduped = Vec::new();
+        let words = words.into_iter();
+        let (capacity, _) = words.size_hint();
+
+        let mut unique_words = HashSet::with_capacity(capacity);
+        let mut deduped = Vec::with_capacity(capacity);
 
         for word in words {
             let word = word.as_ref();
@@ -144,7 +147,11 @@ impl TokensMap {
         #[allow(clippy::unnecessary_sort_by)]
         deduped.sort_by(|a, b| b.len().cmp(&a.len()));
 
-        let mut map = Vec::new();
+        let mut map = Vec::with_capacity(
+            deduped.len() * deduped.get(deduped.len() / 2)
+                .map(|word| word.len())
+                .unwrap_or(0)
+        );
 
         for (token, word) in deduped.into_iter().enumerate() {
             map.extend((token as u16).to_le_bytes());
@@ -244,7 +251,8 @@ impl TokensMap {
     }
 
     pub fn as_words_table(&self) -> HashMap<Box<[u8]>, u16> {
-        let mut tokens = HashMap::new();
+        // Approximate amount of stored tokens.
+        let mut tokens = HashMap::with_capacity(self.0.len() / 10);
 
         self.for_each(|token, word| {
             tokens.insert(word, token);
@@ -254,7 +262,8 @@ impl TokensMap {
     }
 
     pub fn as_tokens_table(&self) -> HashMap<u16, Box<[u8]>> {
-        let mut tokens = HashMap::new();
+        // Approximate amount of stored tokens.
+        let mut tokens = HashMap::with_capacity(self.0.len() / 10);
 
         self.for_each(|token, word| {
             tokens.insert(token, word);

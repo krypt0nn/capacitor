@@ -44,6 +44,16 @@ impl Cluster {
         self.ranks
     }
 
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.ranks.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.ranks.is_empty()
+    }
+
     /// Calculate similarity between the current cluster to the given document.
     pub fn similarity(&self, document: impl IntoIterator<Item = u16>) -> f32 {
         let mut similarity = 0.0;
@@ -392,20 +402,20 @@ mod tests {
     }
 
     #[test]
-    fn clusters_are_semantically_separated() {
+    fn clusters_semantically_separated() {
         let documents = vec![
             make_document(1, 40),
             make_document(1, 50),
             make_document(2, 45),
             make_document(2, 55),
             make_document(3, 42),
-            make_document(3, 48),
+            make_document(3, 48)
         ];
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
 
-        let (clusters, assignments) =
-            clusterize(3, 2, &documents, &mut rng).expect("should clusterize");
+        let (clusters, assignments) = clusterize(3, 2, &documents, &mut rng)
+            .expect("should clusterize");
 
         assert_eq!(clusters.len(), 3);
         assert_eq!(assignments.len(), documents.len());

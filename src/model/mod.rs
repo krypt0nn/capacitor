@@ -34,7 +34,7 @@ pub use generator::{TokensGenerator, TokensGeneratorStats};
 /// For every multi-word token, return the token id of its bare last word
 /// (` chat` -> `chat`, `hi chat` -> `chat`).
 fn word_aliases(tokens: &TokensMap) -> HashMap<u16, u16> {
-    let mut words = HashMap::<Box<[u8]>, u16>::new();
+    let mut words = HashMap::<Box<[u8]>, u16>::with_capacity(tokens.len());
     let mut multi_word = Vec::new();
 
     tokens.for_each(|token, word| {
@@ -49,7 +49,7 @@ fn word_aliases(tokens: &TokensMap) -> HashMap<u16, u16> {
         }
     });
 
-    let mut aliases = HashMap::new();
+    let mut aliases = HashMap::with_capacity(multi_word.len());
 
     for (token, word) in multi_word {
         let Some(last_word) = word.split_whitespace().last() else {
@@ -221,17 +221,18 @@ impl Model {
             // Read expert cluster centroids.
 
             let mut cluster = HashMap::<u16, f32>::with_capacity(cluster_len);
+            let mut token = [0; 2];
             let mut frequency = [0; 4];
             let mut j = 0;
 
             while j < cluster_len {
-                let token = u16::from_le_bytes([
-                    model[offset], model[offset + 1]
-                ]);
-
+                token.copy_from_slice(&model[offset..offset + 2]);
                 frequency.copy_from_slice(&model[offset + 2..offset + 6]);
 
-                cluster.insert(token, f32::from_le_bytes(frequency));
+                cluster.insert(
+                    u16::from_le_bytes(token),
+                    f32::from_le_bytes(frequency)
+                );
 
                 offset += 6;
                 j += 1;
@@ -267,9 +268,29 @@ impl Model {
     }
 
     pub fn into_bytes(self) -> Box<[u8]> {
-        // I technically can calculate exact container size needed to store
-        // this model but who cares?
-        let mut model = Vec::new();
+        let mut size = 11; // capacitorv2
+
+        // Metadata keys.
+        size += 2; // u16 keys count
+
+        for (key, value) in &self.keys {
+            // u8 key len, u16 key value len
+            size += 3 + key.len() + value.len();
+        }
+
+        size += 8 + self.tokens.size();      // u64 tokens map size
+        size += 8 + self.transitions.size(); // u64 transitions map size
+        size += 4; // u32 experts count
+
+        for expert in &self.experts {
+            // u32 cluster len, u64 transitions map len,
+            // (u16 token, f32 frequency) in cluster
+            size += 12 + 6 * expert.cluster().len()
+                + expert.transitions().size();
+        }
+
+        // Pre-allocate whole model buffer.
+        let mut model = Vec::with_capacity(size);
 
         model.extend(b"capacitorv2");
 

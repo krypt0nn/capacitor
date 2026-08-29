@@ -325,7 +325,7 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     let stats = generator.stats();
-                    let mut experts_usage = Vec::new();
+                    let mut experts_usage = Vec::with_capacity(stats.total_experts());
 
                     for i in 0..stats.total_experts() {
                         let Some(usage) = stats.expert_frequency(i) else {

@@ -207,8 +207,10 @@ pub fn build<R: Rng>(
         document.truncate(i);
     }
 
-    let mut alphabet = HashMap::new();
-    let mut vocab = Vec::new();
+    let num_tokens = recipe.tokenizer.num_tokens as usize;
+
+    let mut alphabet = HashMap::with_capacity(num_tokens);
+    let mut vocab = Vec::with_capacity(num_tokens);
 
     // Special tags must never be merged with other tokens.
     let mut special_tags = HashSet::new();
@@ -497,9 +499,9 @@ pub fn build<R: Rng>(
                 return None;
             }
 
-            let mut document_transitions = HashMap::<(&[u16], &[u16]), usize>::new();
-
             let doc_len = document.len() - min_len;
+
+            let mut document_transitions = HashMap::with_capacity(doc_len);
             let mut i = 0;
 
             while i < doc_len {
@@ -563,7 +565,9 @@ pub fn build<R: Rng>(
         // Documents were already assigned to their most similar cluster
         // during clusterization.
 
-        let mut documents_clusters = vec![Vec::new(); clusters.len()];
+        let mut documents_clusters = (0..clusters.len())
+            .map(|_| Vec::with_capacity(documents.len() / clusters.len()))
+            .collect::<Vec<_>>();
 
         for (document, document_cluster) in documents.iter()
             .zip(document_assignment.into_vec())
