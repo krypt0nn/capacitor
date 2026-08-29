@@ -53,6 +53,7 @@ pub struct TokensGenerator<'model, R: Rng> {
     sequence: Vec<u16>,
     sequence_ptr: usize,
     rng: R,
+    pending: Vec<u8>,
 
     stats: TokensGeneratorStats,
 
@@ -162,6 +163,7 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
             sequence_ptr: generation_prefix.len() - 1,
             sequence: generation_prefix.to_vec(),
             rng,
+            pending: Vec::new(),
             stats: TokensGeneratorStats {
                 experts_use: HashMap::from_iter({
                     model.experts.iter()
@@ -412,13 +414,32 @@ impl<R: Rng> Iterator for TokensGenerator<'_, R> {
 impl<R: Rng> FusedIterator for TokensGenerator<'_, R> {}
 
 impl<R: Rng> Read for TokensGenerator<'_, R> {
-    fn read(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if !self.pending.is_empty() {
+            let n = self.pending.as_slice().read(buf)?;
+            if n < self.pending.len() {
+                self.pending.drain(..n);
+                return Ok(n);
+            }
+            self.pending.clear();
+            return Ok(n);
+        }
+
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
         let Some(token) = self.next() else {
             return Ok(0);
         };
 
-        buf.write_all(&token)?;
-
-        Ok(token.len())
+        if buf.len() >= token.len() {
+            buf[..token.len()].copy_from_slice(&token);
+            Ok(token.len())
+        } else {
+            buf.copy_from_slice(&token[..buf.len()]);
+            self.pending = token[buf.len()..].to_vec();
+            Ok(buf.len())
+        }
     }
 }
