@@ -17,7 +17,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::cmp::Ordering;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::str::FromStr;
 use std::path::PathBuf;
 
@@ -247,6 +247,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let mut verbose = false;
+            let mut stdio = false;
 
             let mut top_k = None;
             let mut temperature = None;
@@ -255,6 +256,10 @@ fn main() -> anyhow::Result<()> {
             while let Some(flag) = args.next() {
                 if ["-v", "--verbose"].contains(&flag.as_str()) {
                     verbose = true;
+                }
+
+                else if flag == "--stdio" {
+                    stdio = true;
                 }
 
                 else if flag.as_str() == "--top-k" {
@@ -283,10 +288,13 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
+            let mut stdin = std::io::stdin();
             let mut stdout = std::io::stdout();
 
-            stdout.write_all(b"Loading model...")?;
-            stdout.flush()?;
+            if !stdio {
+                stdout.write_all(b"Loading model...")?;
+                stdout.flush()?;
+            }
 
             let mut model = Model::open(std::fs::read(path)?)?;
 
@@ -311,59 +319,78 @@ fn main() -> anyhow::Result<()> {
                 );
             }
 
-            let stdin = std::io::stdin();
-
             let mut rng = get_rng();
 
-            loop {
-                stdout.write_all(b"\n\n> ")?;
-                stdout.flush()?;
+            // Read input prompts from stdin, write output tokens to stdout.
+            if stdio {
+                let mut prompt = [0; 1024];
 
-                let mut prefix = String::new();
+                // TODO: use `Model::{START,STOP}_TOKEN`
+                loop {
+                    let n = stdin.read(&mut prompt)?;
 
-                stdin.read_line(&mut prefix)?;
+                    if n > 0 {
+                        let prompt = String::from_utf8_lossy(&prompt[..n]);
 
-                let mut generator = model.generate(prefix.trim(), &mut rng)?;
+                        let mut generator = model.generate(prompt, &mut rng)?;
 
-                if !verbose {
-                    for token in generator {
-                        stdout.write_all(token.as_ref())?;
-                        stdout.flush()?;
+                        std::io::copy(&mut generator, &mut stdout)?;
                     }
                 }
+            }
 
-                else {
-                    for token in &mut generator {
-                        stdout.write_all(token.as_ref())?;
-                        stdout.write_all(b" ")?;
-                        stdout.flush()?;
-                    }
+            // Read from user input, write to stdout with text decorations.
+            else {
+                loop {
+                    stdout.write_all(b"\n\n> ")?;
+                    stdout.flush()?;
 
-                    let stats = generator.stats();
-                    let mut experts_usage = Vec::with_capacity(stats.total_experts());
+                    let mut prefix = String::new();
 
-                    for i in 0..stats.total_experts() {
-                        let Some(usage) = stats.expert_frequency(i) else {
-                            continue;
-                        };
+                    stdin.read_line(&mut prefix)?;
 
-                        if usage > 0.0 {
-                            experts_usage.push((usage, format!("  [Expert {i:3}] {:.2} %\n", usage * 100.0)));
+                    let mut generator = model.generate(prefix.trim(), &mut rng)?;
+
+                    if !verbose {
+                        for token in generator {
+                            stdout.write_all(token.as_ref())?;
+                            stdout.flush()?;
                         }
                     }
 
-                    if !experts_usage.is_empty() {
-                        experts_usage.sort_by(|a, b| {
-                            b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
-                        });
-
-                        stdout.write_all(b"\n\nExperts use:\n")?;
-
-                        for (_, line) in experts_usage {
-                            stdout.write_all(line.as_bytes())?;
+                    else {
+                        for token in &mut generator {
+                            stdout.write_all(token.as_ref())?;
+                            stdout.write_all(b" ")?;
+                            stdout.flush()?;
                         }
 
-                        stdout.flush()?;
+                        let stats = generator.stats();
+                        let mut experts_usage = Vec::with_capacity(stats.total_experts());
+
+                        for i in 0..stats.total_experts() {
+                            let Some(usage) = stats.expert_frequency(i) else {
+                                continue;
+                            };
+
+                            if usage > 0.0 {
+                                experts_usage.push((usage, format!("  [Expert {i:3}] {:.2} %\n", usage * 100.0)));
+                            }
+                        }
+
+                        if !experts_usage.is_empty() {
+                            experts_usage.sort_by(|a, b| {
+                                b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
+                            });
+
+                            stdout.write_all(b"\n\nExperts use:\n")?;
+
+                            for (_, line) in experts_usage {
+                                stdout.write_all(line.as_bytes())?;
+                            }
+
+                            stdout.flush()?;
+                        }
                     }
                 }
             }

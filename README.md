@@ -101,7 +101,9 @@ use available tokens to select N active experts and apply their transitions
 table on top of shared one to select domain-specific tokens with higher
 priority.
 
-## Inference params
+## Inference
+
+### Runtime parameters
 
 | Metadata key                      | Description                                     |
 | --------------------------------- | ----------------------------------------------- |
@@ -110,10 +112,19 @@ priority.
 | `model.inference.max_tokens`      | Hard limit of maximal amount of output tokens.  |
 | `model.inference.experts_context` | Context window of experts.                      |
 
-Top-K and temperature can be specified via run command args:
+Inference params can be specified via run command args:
 
 ```bash
 capacitor run <model> --top-k 20 --temperature 1.4 --max-tokens 1024
+```
+
+### Stdio mode
+
+Standard CLI can run the model in stdio mode, when it reads input prompt from
+stdin and writes raw output to stdout:
+
+```bash
+echo 'hello' | capacitor run --stdio --max-tokens 10000 > output.txt
 ```
 
 Author: [Nikita Podvirnyi](https://github.com/krypt0nn)\
