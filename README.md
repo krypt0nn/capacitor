@@ -113,7 +113,7 @@ priority.
 Top-K and temperature can be specified via run command args:
 
 ```bash
-capacitor run <model> --top-k 20 --temperature 1.4
+capacitor run <model> --top-k 20 --temperature 1.4 --max-tokens 1024
 ```
 
 Author: [Nikita Podvirnyi](https://github.com/krypt0nn)\

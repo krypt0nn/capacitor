@@ -250,6 +250,7 @@ fn main() -> anyhow::Result<()> {
 
             let mut top_k = None;
             let mut temperature = None;
+            let mut max_tokens = None;
 
             while let Some(flag) = args.next() {
                 if ["-v", "--verbose"].contains(&flag.as_str()) {
@@ -268,6 +269,13 @@ fn main() -> anyhow::Result<()> {
                         .map(|value| value.parse::<f32>())
                         .transpose()
                         .map_err(|err| anyhow::anyhow!("invalid temperature format: {err}"))?;
+                }
+
+                else if flag.as_str() == "--max-tokens" {
+                    max_tokens = args.next()
+                        .map(|value| value.parse::<usize>())
+                        .transpose()
+                        .map_err(|err| anyhow::anyhow!("invalid max_tokens format: {err}"))?;
                 }
 
                 else {
@@ -292,6 +300,13 @@ fn main() -> anyhow::Result<()> {
             if let Some(value) = temperature {
                 model.keys_mut().insert(
                     String::from("model.inference.temperature"),
+                    value.to_string()
+                );
+            }
+
+            if let Some(value) = max_tokens {
+                model.keys_mut().insert(
+                    String::from("model.inference.max_tokens"),
                     value.to_string()
                 );
             }
