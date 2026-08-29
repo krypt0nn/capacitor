@@ -323,7 +323,7 @@ impl Model {
     #[inline]
     pub fn build(
         recipe: Recipe,
-        rng: &mut impl Rng,
+        rng: impl Rng,
         progress: impl Fn(BuildProgress) + Send + Sync
     ) -> anyhow::Result<Self> {
         builder::build(recipe, rng, progress)
@@ -402,7 +402,7 @@ impl Model {
     pub fn generate<'model, R: Rng>(
         &'model self,
         content: impl AsRef<str>,
-        rng: &'model mut R
+        rng: R
     ) -> anyhow::Result<TokensGenerator<'model, R>> {
         TokensGenerator::new(self, content, rng)
     }

@@ -80,16 +80,16 @@ pub enum Progress {
     Done
 }
 
-pub fn build(
+pub fn build<R: Rng>(
     mut recipe: Recipe,
-    rng: &mut impl Rng,
-    progress: impl Fn(Progress) + Send + Sync
+    mut rng: R,
+    updater: impl Fn(Progress) + Send + Sync
 ) -> anyhow::Result<Model> {
     // Read documents from the dataset files.
 
     let mut documents = Vec::with_capacity(recipe.files.len());
 
-    progress(Progress::ReadFiles {
+    updater(Progress::ReadFiles {
         current: 0,
         total: recipe.files.len()
     });
@@ -123,7 +123,7 @@ pub fn build(
 
         documents.extend(dataset_documents);
 
-        progress(Progress::ReadFiles {
+        updater(Progress::ReadFiles {
             current: i + 1,
             total: recipe.files.len()
         });
@@ -230,7 +230,7 @@ pub fn build(
 
     let mut pre_tokenized_documents = Vec::with_capacity(documents.len());
 
-    progress(Progress::PreTokenize { current, total });
+    updater(Progress::PreTokenize { current, total });
 
     for document in &documents {
         current += document.len() as u64;
@@ -259,12 +259,8 @@ pub fn build(
                 .collect::<Vec<u16>>()
         );
 
-        progress(Progress::PreTokenize { current, total });
+        updater(Progress::PreTokenize { current, total });
     }
-
-    // The very last document may be overwritten in the progress view by the
-    // next stage before it gets rendered - close the bar explicitly.
-    progress(Progress::PreTokenize { current: total, total });
 
     // Train tokens model.
     //
@@ -292,7 +288,7 @@ pub fn build(
         .cloned()
         .collect::<Vec<Vec<u16>>>();
 
-    progress(Progress::FitTokenizer {
+    updater(Progress::FitTokenizer {
         current: vocab.len() as u16,
         total: recipe.tokenizer.num_tokens
     });
@@ -406,22 +402,15 @@ pub fn build(
             }
         }
 
-        progress(Progress::FitTokenizer {
+        updater(Progress::FitTokenizer {
             current: vocab.len() as u16,
             total: recipe.tokenizer.num_tokens
         });
     }
 
-    // The corpus may run out of pairs before the requested token amount is
-    // learned - close the bar explicitly.
-    progress(Progress::FitTokenizer {
-        current: recipe.tokenizer.num_tokens,
-        total: recipe.tokenizer.num_tokens
-    });
-
     // Build tokens map.
 
-    progress(Progress::BuildTokensMap);
+    updater(Progress::BuildTokensMap);
 
     let tokens_map = TokensMap::from_words(vocab.iter())?;
 
@@ -489,7 +478,7 @@ pub fn build(
     // every from token is represented by the bare last word it contains.
     // To-grams keep their original tokens.
 
-    progress(Progress::BuildSharedTransitions);
+    updater(Progress::BuildSharedTransitions);
 
     let normalized_documents = documents.par_iter()
         .map(|document| {
@@ -562,7 +551,7 @@ pub fn build(
     if recipe.experts.num_total > 0 {
         // Clusterize documents.
 
-        progress(Progress::ClusterizeDatasets);
+        updater(Progress::ClusterizeDatasets);
 
         let (clusters, document_assignment) = clusterize(
             recipe.experts.num_total,
@@ -586,7 +575,7 @@ pub fn build(
 
         let n = clusters.len();
 
-        progress(Progress::BuildExperts {
+        updater(Progress::BuildExperts {
             current: 0,
             total: n
         });
@@ -634,7 +623,7 @@ pub fn build(
                     std::sync::atomic::Ordering::Relaxed
                 );
 
-                progress(Progress::BuildExperts {
+                updater(Progress::BuildExperts {
                     current: current + 1,
                     total: n
                 });
@@ -648,10 +637,6 @@ pub fn build(
             .into_iter()
             .flatten()
             .collect::<Vec<Expert>>();
-
-        // Empty clusters are skipped without reporting progress - close the
-        // bar explicitly.
-        progress(Progress::BuildExperts { current: n, total: n });
     }
 
     // Prefill default metadata keys.
@@ -727,7 +712,7 @@ pub fn build(
 
     // Build the model.
 
-    progress(Progress::Done);
+    updater(Progress::Done);
 
     Ok(Model {
         keys: recipe.keys,

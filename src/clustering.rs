@@ -74,11 +74,11 @@ type Profile = Box<[(u16, u32)]>;
 /// Returns the clusters alongside per-document index of the most similar
 /// cluster (the assignment is computed during clusterization itself).
 #[allow(clippy::type_complexity)]
-pub fn clusterize(
+pub fn clusterize<R: Rng>(
     mut clusters_num: usize,
     mut centroids_num: usize,
     documents: impl AsRef<[Box<[u16]>]>,
-    rng: &mut impl Rng
+    mut rng: R
 ) -> anyhow::Result<(Box<[Cluster]>, Box<[usize]>)> {
     let documents = documents.as_ref();
 

@@ -52,7 +52,7 @@ pub struct TokensGenerator<'model, R: Rng> {
     model: &'model Model,
     sequence: Vec<u16>,
     sequence_ptr: usize,
-    rng: &'model mut R,
+    rng: R,
 
     stats: TokensGeneratorStats,
 
@@ -85,7 +85,7 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
     pub fn new(
         model: &'model Model,
         content: impl AsRef<str>,
-        rng: &'model mut R
+        rng: R
     ) -> anyhow::Result<Self> {
         // Parse model's template, stop tokens and prefill values.
 
