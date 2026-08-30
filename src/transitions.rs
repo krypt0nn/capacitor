@@ -391,6 +391,7 @@ fn test_small_transitions_map() -> anyhow::Result<()> {
     }]));
 
     assert_eq!(transitions.find_transitions([9]), HashSet::new());
+    assert_eq!(transitions.find_transitions([0]), HashSet::new());
 
     assert!(TransitionsMap::open(vec![0u8, 0].into_boxed_slice()).is_err());
 

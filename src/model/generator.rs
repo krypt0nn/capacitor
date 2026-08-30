@@ -19,7 +19,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::iter::FusedIterator;
-use std::io::{Read, Write};
+use std::io::Read;
 
 use rand_chacha::rand_core::Rng;
 
@@ -50,11 +50,16 @@ impl TokensGeneratorStats {
 #[derive(Debug)]
 pub struct TokensGenerator<'model, R: Rng> {
     model: &'model Model,
+    rng: R,
+
+    // Iterator
     sequence: Vec<u16>,
     sequence_ptr: usize,
-    rng: R,
-    pending: Vec<u8>,
 
+    // Reader
+    read_buf: Vec<u8>,
+
+    /// Generator stats counter.
     stats: TokensGeneratorStats,
 
     /// Tokens after which the inference must be stopped.
@@ -160,10 +165,13 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
 
         Ok(TokensGenerator {
             model,
+            rng,
+
             sequence_ptr: generation_prefix.len() - 1,
             sequence: generation_prefix.to_vec(),
-            rng,
-            pending: Vec::new(),
+
+            read_buf: Vec::new(),
+
             stats: TokensGeneratorStats {
                 experts_use: HashMap::from_iter({
                     model.experts.iter()
@@ -171,6 +179,7 @@ impl<'model, R: Rng> TokensGenerator<'model, R> {
                         .map(|(i, _)| (i, 0))
                 })
             },
+
             stop_tokens,
             active_experts,
             top_k,
@@ -415,31 +424,51 @@ impl<R: Rng> FusedIterator for TokensGenerator<'_, R> {}
 
 impl<R: Rng> Read for TokensGenerator<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if !self.pending.is_empty() {
-            let n = self.pending.as_slice().read(buf)?;
-            if n < self.pending.len() {
-                self.pending.drain(..n);
-                return Ok(n);
+        // Read buffered model output if we have any.
+        if !self.read_buf.is_empty() {
+            let n = self.read_buf.as_slice()
+                .read(buf)?;
+
+            if n == self.read_buf.len() {
+                self.read_buf.clear();
+            } else {
+                self.read_buf.drain(..n);
             }
-            self.pending.clear();
+
             return Ok(n);
         }
 
-        if buf.is_empty() {
+        // Obtain output buffer length.
+        let buf_len = buf.len();
+
+        // Don't generate new output if the output buffer is empty.
+        if buf_len == 0 {
             return Ok(0);
         }
 
+        // Try to generate new output.
         let Some(token) = self.next() else {
             return Ok(0);
         };
 
-        if buf.len() >= token.len() {
+        let token_len = token.len();
+
+        // If we can write generated token to the output buffer then do it
+        // immediately.
+        if buf_len >= token_len {
             buf[..token.len()].copy_from_slice(&token);
+
             Ok(token.len())
-        } else {
-            buf.copy_from_slice(&token[..buf.len()]);
-            self.pending = token[buf.len()..].to_vec();
-            Ok(buf.len())
+        }
+
+        // Otherwise split it into parts and store the other one in generator's
+        // output buffer.
+        else {
+            buf.copy_from_slice(&token[..buf_len]);
+
+            self.read_buf = token[buf_len..].to_vec();
+
+            Ok(buf_len)
         }
     }
 }
